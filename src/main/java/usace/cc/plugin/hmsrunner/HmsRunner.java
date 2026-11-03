@@ -43,7 +43,7 @@ public class HmsRunner  {
          
         //perform all actions
         for (Action a : mp.getActions()){
-            pm.logMessage(new Message(a.getDescription()));
+            pm.log.sendMessage(a.getDescription());
             switch(a.getType()){
                 case "compute_forecast":
                     ComputeForecastAction cfa = new ComputeForecastAction(a);

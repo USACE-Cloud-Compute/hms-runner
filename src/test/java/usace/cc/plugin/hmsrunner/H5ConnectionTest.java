@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.python.icu.impl.Assert;
 
 import hdf.hdf5lib.exceptions.HDF5LibraryException;
+import usace.cc.plugin.hmsrunner.utils.H5Connection;
 
 public class H5ConnectionTest {
     @Test

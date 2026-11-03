@@ -6,6 +6,31 @@
     "configurations": [
         {
             "type": "java",
+            "name": "FailedEventsFinder",
+            "request": "launch",
+            "mainClass": "usace.cc.plugin.hmsrunner.FailedEventsFinder"
+        },
+        {
+            "type": "java",
+            "name": "PeakMerger",
+            "request": "launch",
+            "mainClass": "usace.cc.plugin.hmsrunner.PeakMerger"
+        },
+        {
+            "type": "java",
+            "name": "PeakMerger",
+            "request": "launch",
+            "mainClass": "usace.cc.plugin.hmsrunner.PeakMerger",
+            "projectName": "hms-runner"
+        },
+        {
+            "type": "java",
+            "name": "FailedEventsFinder",
+            "request": "launch",
+            "mainClass": "usace.cc.plugin.hmsrunner.FailedEventsFinder"
+        },
+        {
+            "type": "java",
             "name": "Launch Current File",
             "request": "launch",
             "mainClass": "${file}",
@@ -46,12 +71,21 @@
         },
         {
             "type": "java",
+            "name": "prep-hdf-files",
+            "request": "launch",
+            "mainClass": "${file}",
+            "vmArgs": "-Djava.library.path=/HEC-HMS-4.13-beta.6/bin/gdal:/HEC-HMS-4.13-beta.6/bin:/HEC-HMS-4.13-beta.6/bin/taudem:/HEC-HMS-4.13-beta.6/bin/mpi:/HEC-HMS-4.13-beta.6/jre/bin:/HEC-HMS-4.13-beta.6/jre/lib/",
+            "args": "",
+            "envFile": "/workspaces/.env-lavon-prep"
+        },
+        {
+            "type": "java",
             "name": "compute-muncie",
             "request": "launch",
             "mainClass": "${file}",
             "vmArgs": "-Djava.library.path=/HEC-HMS-4.13-beta.6/bin/gdal:/HEC-HMS-4.13-beta.6/bin:/HEC-HMS-4.13-beta.6/bin/taudem:/HEC-HMS-4.13-beta.6/bin/mpi:/HEC-HMS-4.13-beta.6/jre/bin:/HEC-HMS-4.13-beta.6/jre/lib/",
             "args": "",
-            "envFile": "/workspaces/.env-muncie"
+            "envFile": "/workspaces/hms-runner/testdata/muncie/.env"
         }
     ]
 }
