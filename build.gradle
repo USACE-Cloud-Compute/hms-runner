@@ -27,14 +27,14 @@ configurations {
 
 dependencies {
     implementation files('/HEC-HMS-4.13-beta.6/hms.jar')
-    implementation files('/workspaces/hms-runner/deps/cc-java-sdk-1.0.0-all.jar')
+    implementation files('/workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar')
     implementation fileTree(dir: '/HEC-HMS-4.13-beta.6/lib', include: '*.jar')
     //implementation 'mil.army.usace.hec:cc-java-sdk:0.0.59'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.1'
     testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.7.1'
     testImplementation files('/HEC-HMS-4.13-beta.6/hms.jar')
     testImplementation fileTree(dir: '/HEC-HMS-4.13-beta.6/lib', include: '*.jar')
-    testImplementation files('/workspaces/hms-runner/deps/cc-java-sdk-1.0.0-all.jar')
+    testImplementation files('/workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar')
     //testImplementation 'mil.army.usace.hec:cc-java-sdk:0.0.59'
 }
 
