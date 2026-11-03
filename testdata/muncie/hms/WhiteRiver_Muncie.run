@@ -1,0 +1,37 @@
+Run: Dec2013
+     Default Description: Yes
+     Log File: Dec2013.log
+     DSS File: Dec2013.dss
+     Is Save Spatial Results: No
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 22:00:55
+     Last Execution Date: 7 September 2022
+     Last Execution Time: 22:39:21
+     Basin: WhiteRiver_Muncie_Dec2013
+     Precip: AORC
+     Control: Dec_2013
+     Save State Type: None
+     Time-Series Output: Save All
+     Time Series Results Manager Start:
+     Time Series Results Manager End:
+End:
+
+Run: Mar_Apr_2018
+     Default Description: Yes
+     Log File: Mar_Apr_2018.log
+     DSS File: Mar_Apr_2018.dss
+     Is Save Spatial Results: Yes
+     Spatial Results Write Interval: 60
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 22:44:53
+     Last Execution Date: 7 September 2022
+     Last Execution Time: 22:43:22
+     Basin: WhiteRiver_Muncie_MarApr2018
+     Precip: MRMS
+     Control: Mar_Apr_2018
+     Save State Type: None
+     Time-Series Output: Save All
+     Time Series Results Manager Start:
+     Time Series Results Manager End:
+End:
+

@@ -1,0 +1,121 @@
+{
+	"stores": [{
+		"name": "FFRD",
+		"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+		"store_type": "FS",
+		"profile": "FFRD",
+		"params": {
+			"root": "/workspaces/hms-runner/testdata/muncie/hms"
+		}
+	}],
+	"attributes": {
+		"project_file": "WhiteRiver_Muncie.hms",
+		"base-hydrology-directory": "hydrology",
+		"simulation": "Dec2013",
+		"model-name": "muncie"
+	},
+	"inputs": [{
+			"name": "data/WhiteRiver_USGSGage.dss",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"data/WhiteRiver_USGSGage.dss"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "Dec_2013.control",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"Dec_2013.control"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "WhiteRiver_Muncie.dss",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"WhiteRiver_Muncie.dss"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "WhiteRiver_Muncie.gage",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"WhiteRiver_Muncie.gage"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "WhiteRiver_Muncie.hms",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"WhiteRiver_Muncie.hms"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "WhiteRiver_Muncie.pdata",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"WhiteRiver_Muncie.pdata"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "WhiteRiver_Muncie.run",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"WhiteRiver_Muncie.run"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "WhiteRiver_Muncie_Dec2013.basin",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"WhiteRiver_Muncie_Dec2013.basin"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "WhiteRiver_Muncie_Dec2013.sqlite",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"WhiteRiver_Muncie_Dec2013.sqlite"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "AORC.met",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"AORC.met"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "WhiteRiver_Muncie.grid",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"WhiteRiver_Muncie.grid"
+			},
+			"store_name": "FFRD"
+		},{
+			"name": "data/AORC_Dec2013.dss",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"data/AORC_Dec2013.dss"
+			},
+			"store_name": "FFRD"
+		}],
+	"outputs": [{
+			"name": "Dec2013.dss",
+			"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"paths": {
+				"default":"Dec2013.dss"
+			},
+			"store_name": "FFRD"
+		}],
+	"actions": [{
+		"type": "compute_simulation",
+		"description": "compute storms",
+		"attributes": {
+			"project_file": "/model/muncie/WhiteRiver_Muncie.hms",
+			"simulation": "Dec2013"
+		},
+		"stores":[],
+		"inputs":[],
+		"outputs":[]
+	}]
+}

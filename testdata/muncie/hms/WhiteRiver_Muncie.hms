@@ -1,0 +1,46 @@
+Project: WhiteRiver_Muncie
+     Description: 
+     Version: 4.10
+     Filepath Separator: \
+     DSS File Name: WhiteRiver_Muncie.dss
+     Time Zone ID: America/Los_Angeles
+End:
+
+Precipitation: MRMS
+     Filename: MRMS.met
+     Description: 
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 22:01
+End:
+
+Precipitation: AORC
+     Filename: AORC.met
+     Description: 
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 22:01
+End:
+
+Basin: WhiteRiver_Muncie_Dec2013
+     Filename: WhiteRiver_Muncie_Dec2013.basin
+     Description: 
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 22:39:17
+End:
+
+Basin: WhiteRiver_Muncie_MarApr2018
+     Filename: WhiteRiver_Muncie_MarApr2018.basin
+     Description: 
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 22:42:55
+End:
+
+Control: Dec_2013
+     FileName: Dec_2013.control
+     Description: 
+End:
+
+Control: Mar_Apr_2018
+     FileName: Mar_Apr_2018.control
+     Description: 
+End:
+

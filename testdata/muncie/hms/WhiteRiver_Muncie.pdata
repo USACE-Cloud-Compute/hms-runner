@@ -1,0 +1,17 @@
+Paired Data Manager: WhiteRiver_Muncie
+     Version: 4.10
+     Filepath Separator: \
+End:
+
+Table: PrairieCreekReservoir
+     Table Type: Elevation-Area
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 22:28:01
+     X-Units: FT
+     Y-Units: ACRE
+     Use External DSS File: NO
+     DSS File: WhiteRiver_Muncie.dss
+     Pathname: //PrairieCreekReservoir/ELEVATION-AREA///TABLE/
+     Interpolation: Linear Interpolation
+End:
+

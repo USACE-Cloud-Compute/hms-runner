@@ -1,0 +1,27 @@
+Gage Manager: WhiteRiver_Muncie
+     Version: 4.10
+     Filepath Separator: \
+End:
+
+Gage: WhiteRiver_Muncie
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 21:39:40
+     Reference Height Units: Feet
+     Reference Height: 32.808
+     Gage Type: Flow
+     Units: CFS
+     Data Type: INST-VAL
+     Data Source Type: External DSS
+     Variant: Variant-1
+       Last Variant Modified Date: 7 September 2022
+       Last Variant Modified Time: 21:37:42
+       Default Variant: Yes
+       DSS File Name: data\WhiteRiver_USGSGage.dss
+       DSS Pathname: /WHITE RIVER/MUNCIE, IN/FLOW/01JAN2005 - 01AUG2022/15MIN/USGS/
+       Start Time: 19 December 2013, 00:00
+       End Time: 25 December 2013, 00:00
+       Start Time: 26 March 2018, 00:00
+       End Time: 7 April 2018, 00:00
+     End Variant: Variant-1
+End:
+

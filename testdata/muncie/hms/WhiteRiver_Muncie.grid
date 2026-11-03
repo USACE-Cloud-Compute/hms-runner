@@ -1,0 +1,23 @@
+Grid Manager: WhiteRiver_Muncie
+     Version: 4.10
+     Filepath Separator: \
+End:
+
+Grid: AORC
+     Grid Type: Precipitation
+     Last Modified Date: 7 September 2022
+     Last Modified Time: 21:39:40
+     Reference Height Units: Meters
+     Reference Height: 10.0
+     Data Source Type: External DSS
+     Variant: Variant-1
+       Last Variant Modified Date: 7 September 2022
+       Last Variant Modified Time: 21:39:40
+       Default Variant: Yes
+       DSS File Name: data\AORC_Dec2013.dss
+       DSS Pathname: ///PRECIPITATION/18DEC2013:0600/18DEC2013:0700//
+     End Variant: Variant-1
+     Use Lookup Table: No
+     Storm Center X: 475262
+     Storm Center Y: 1776050
+End:
