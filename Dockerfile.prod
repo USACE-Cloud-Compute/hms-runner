@@ -26,7 +26,7 @@ WORKDIR /app
 RUN git clone https://github.com/USACE-Cloud-Compute/hms-runner.git
 WORKDIR /app/hms-runner
 #build gradle
-COPY deps/cc-java-sdk-1.0.2-all.jar /workspaces/hms-runner/deps/cc-java-sdk-1.0.2-all.jar
+COPY deps/cc-java-sdk-1.1.2-all.jar /workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar
 RUN gradle build --no-daemon -x test
 
 FROM ubuntu:20.04 AS prod
@@ -40,7 +40,7 @@ RUN mkdir -p  /${HMS_HOME}
 
 COPY --from=builder /app/hms-runner/build/libs /hms
 COPY --from=builder /${HMS_HOME} /${HMS_HOME}
-COPY --from=builder /workspaces/hms-runner/deps/cc-java-sdk-1.0.2-all.jar /${HMS_HOME}/lib
+COPY --from=builder /workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar /${HMS_HOME}/lib
 ENV HMS_HOME=${HMS_HOME}
 ENV PROG=hms.hms
 ENV PATH=/${HMS_HOME}/bin/taudem:${HMS_HOME}/bin/mpi:${HMS_HOME}/bin:${HMS_HOME}/jre/bin/:${HMS_HOME}/jre/lib/:$PATH
