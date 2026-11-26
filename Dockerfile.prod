@@ -94,30 +94,60 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
         libxrender1 libxtst6 libxi6 libfreetype6 libgfortran5 libfontconfig1
 
 # ---- HEC-HMS distribution we compile against -------------------------------
+# HEC's own artifact naming is not consistent between releases:
+#
+#   4.13-linux64/  ->  hec-hms-4.13-linux64-linux64.tar.gz      (platform twice)
+#   4.14-linux64/  ->  hec-hms-4.14-linux64.tar.gz              (platform once)
+#   4.13-beta.6-linux64/  ->  hec-hms-4.13-beta.6-linux64.tar.gz
+#
+# So probe both shapes, log which one hit, and allow a leg to pin the exact URL
+# via HMS_TARBALL_URL rather than editing this file the next time it drifts.
+# A HEAD that is refused, redirected oddly or unreachable is confirmed with a
+# 1-byte ranged GET before anything is called missing.
 RUN set -eux; \
     if [ "${SKIP_HMS_DOWNLOAD}" = "true" ]; then \
         test -f "${HMS_HOME}/hms.jar"; \
         echo "using pre-baked HEC-HMS at ${HMS_HOME}"; \
         exit 0; \
     fi; \
-    url="${HMS_TARBALL_URL}"; \
-    if [ -z "${url}" ]; then \
-        url="${HMS_NEXUS_BASE}/mil/army/usace/hec/hec-hms/${HMS_VERSION}-${HMS_PLATFORM}/hec-hms-${HMS_VERSION}-${HMS_PLATFORM}.tar.gz"; \
+    dir="${HMS_NEXUS_BASE}/mil/army/usace/hec/hec-hms/${HMS_VERSION}-${HMS_PLATFORM}"; \
+    if [ -n "${HMS_TARBALL_URL}" ]; then \
+        candidates="${HMS_TARBALL_URL}"; \
+    else \
+        candidates="${dir}/hec-hms-${HMS_VERSION}-${HMS_PLATFORM}-${HMS_PLATFORM}.tar.gz ${dir}/hec-hms-${HMS_VERSION}-${HMS_PLATFORM}.tar.gz"; \
     fi; \
-    echo "GET ${url}"; \
-    code="$(curl -sS -L -o /tmp/hms.tar.gz -w '%{http_code}' \
-        --connect-timeout 20 --max-time 1800 \
-        --retry 5 --retry-delay 15 --retry-all-errors --retry-connrefused \
-        "${url}" || echo curl-error)"; \
-    if [ "${code}" != "200" ]; then \
-        echo "FAIL: HTTP ${code} fetching ${url}" >&2; \
+    found=""; \
+    for candidate in ${candidates}; do \
+        probe="$(curl -sS -I -L -o /dev/null -w '%{http_code}' \
+            --connect-timeout 20 --max-time 60 \
+            --retry 3 --retry-delay 5 --retry-all-errors --retry-connrefused \
+            "${candidate}" || echo curl-error)"; \
+        case "${probe}" in \
+            3[0-9][0-9]|405|501|000|curl-error) \
+                probe="$(curl -sS -o /dev/null --range 0-0 -L -w '%{http_code}' \
+                    --connect-timeout 20 --max-time 60 "${candidate}" || echo curl-error)" ;; \
+        esac; \
+        echo "probe HTTP ${probe} ${candidate}"; \
+        case "${probe}" in 200|206) found="${candidate}"; break ;; esac; \
+    done; \
+    if [ -z "${found}" ]; then \
+        echo "FAIL: no HEC-HMS tarball for ${HMS_VERSION} (${HMS_PLATFORM}); probed:" >&2; \
+        for candidate in ${candidates}; do echo "  ${candidate}" >&2; done; \
         echo "linux64 versions Nexus lists for hec-hms (last 12):" >&2; \
         curl -sSL --max-time 60 \
             "${HMS_NEXUS_BASE}/mil/army/usace/hec/hec-hms/maven-metadata.xml" \
             | tr '<' '\n' | sed -n 's/^version>//p' | grep -- '-linux64$' | tail -n 12 >&2 \
             || echo "  (could not read maven-metadata.xml)" >&2; \
-        echo "if the version is missing above it has no linux64 build: drop the leg, or mirror the tarball and pass HMS_TARBALL_URL" >&2; \
+        echo "if the directory exists under a different file name, pin it: --build-arg HMS_TARBALL_URL=<url>" >&2; \
         exit 1; \
+    fi; \
+    echo "GET ${found}"; \
+    code="$(curl -sS -L -o /tmp/hms.tar.gz -w '%{http_code}' \
+        --connect-timeout 20 --max-time 1800 \
+        --retry 5 --retry-delay 15 --retry-all-errors --retry-connrefused \
+        "${found}" || echo curl-error)"; \
+    if [ "${code}" != "200" ]; then \
+        echo "FAIL: HTTP ${code} downloading ${found}" >&2; exit 1; \
     fi; \
     size="$(wc -c < /tmp/hms.tar.gz)"; \
     echo "HTTP ${code}, ${size} bytes"; \

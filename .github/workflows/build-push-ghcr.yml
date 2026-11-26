@@ -81,6 +81,12 @@ jobs:
           # would silently become "4.1" in the tag and in the tarball URL.
           - hms: "4.13"
             default: true
+            # Optional escape hatch when HEC's artifact name does not match either
+            # shape the Dockerfile probes -- it tries
+            #   hec-hms-<ver>-<platform>-<platform>.tar.gz and
+            #   hec-hms-<ver>-<platform>.tar.gz
+            # and 4.13 needs the first while 4.14 needs the second. To pin one:
+            # tarballUrl: https://.../hec-hms-4.13-linux64-linux64.tar.gz
           # 4.14 turned off 2026-11-26: hec-hms-4.14-linux64.tar.gz downloads
           # fine, then gradle fails to compile the plugin against it. Uncomment
           # these two lines once those compile errors are fixed, and dry_run it
@@ -150,6 +156,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             HMS_VERSION=${{ matrix.hms }}
+            HMS_TARBALL_URL=${{ matrix.tarballUrl }}
             RUNNER_VERSION=${{ steps.tags.outputs.version }}
             CC_SDK_VERSION=${{ env.CC_SDK_VERSION }}
             CC_SDK_SHA256=${{ env.CC_SDK_SHA256 }}
