@@ -81,6 +81,7 @@ jobs:
           # would silently become "4.1" in the tag and in the tarball URL.
           - hms: "4.13"
             default: true
+            runtimeBaseImage: ubuntu:20.04
             # Optional escape hatch when HEC's artifact name does not match either
             # shape the Dockerfile probes -- it tries
             #   hec-hms-<ver>-<platform>-<platform>.tar.gz and

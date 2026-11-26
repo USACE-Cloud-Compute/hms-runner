@@ -51,7 +51,7 @@ ARG BUILDER_BASE_IMAGE=eclipse-temurin:17-jdk
 # ubuntu:20.04 left standard support in May 2025; its apt pools move to
 # old-releases and break unattended builds. Override with ubuntu:20.04 if a
 # legacy glibc is ever needed.
-ARG RUNTIME_BASE_IMAGE=ubuntu:22.04
+ARG RUNTIME_BASE_IMAGE=ubuntu:20.04
 
 # ===========================================================================
 # builder: HEC-HMS + Gradle + the plugin fat jar
