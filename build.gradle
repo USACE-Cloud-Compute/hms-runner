@@ -1,48 +1,68 @@
-// Needs a Java 17 Gradle JVM: the jar targets Java 17 (see jar below) and
-// HEC-HMS 4.13+ is built for it. The note here used to say 1.8, which predates
-// the 17 target.
+// The Gradle JVM has to be at least as new as the HEC-HMS release being compiled
+// against: 4.13 is Java 17 bytecode, 4.14 is Java 21 (class file 65.0). Gradle
+// itself has a ceiling per release -- 7.3.1 cannot execute on Java 21 -- so the JDK
+// and Gradle move together. The matrix in .github/workflows/build-push-ghcr.yml
+// pins both per HEC-HMS release; build.gradle just refuses to fail confusingly.
 plugins {
     id 'java-library'
 }
 
 // ---------------------------------------------------------------------------
-// Build-time locations.
+// Build-time locations and toolchain.
 //
 // HEC-HMS:  -PhmsHome=<dir>, or HMS_HOME.  Default /hms.
-//   /hms is where Dockerfile_13_6 installs HEC-HMS and what .vscode/launch.json
-//   points java.library.path, GDAL_DATA and PROJ_LIB at, so a plain
-//   `gradle build` and an F5 debug session agree on one path. Dockerfile.prod
-//   passes its own -PhmsHome, so its HMS_HOME=/opt/hms is unaffected by this
-//   default.
+//   /hms is where Dockerfile_13_6 and Dockerfile_14 install HEC-HMS and what
+//   .vscode/launch.json points java.library.path, GDAL_DATA and PROJ_LIB at, so a
+//   plain `gradle build` and an F5 debug session agree on one path.
+//   Dockerfile.prod installs to /opt/hms and passes -PhmsHome, so it is unaffected
+//   by this default.
+//
+// Bytecode level:  -PjavaCompat=<n>, or JAVA_COMPAT.  Default 17.
+//   Must be <= the runtime JRE the image ships, and the Gradle JVM must be >= it.
 //
 // cc-java-sdk:  resolved from the GitHub release by default --
 //   https://github.com/USACE-Cloud-Compute/cc-java-sdk/releases
 //   usace.cc:cc-java-sdk:1.1.2  ->  v1.1.2/cc-java-sdk-1.1.2-all.jar
-//   (92,449,732 bytes; sha256 a245a7cd...e3840cd0, which GitHub publishes as a
-//    digest on the release asset -- the workflow's empty CC_SDK_SHA256 can be
-//    filled in straight from the release page)
-//   The fat jar is a git-ignored binary, so the previous default -- a
-//   hand-dropped deps/cc-java-sdk-1.1.2-all.jar -- could not resolve on a clean
-//   checkout. -PccSdkVersion picks a different release tag.
-//
-//   -PccSdkJar=<file> (or CC_SDK_JAR) still wins and is checked for existence,
-//   for offline builds, an internal mirror, or an unreleased branch build. That
-//   is what Dockerfile.prod and build-push-ghcr.yml pass, so a published image
-//   never contacts GitHub from the Gradle daemon.
+//   (92,449,732 bytes; sha256 a245a7cd...e3840cd0, published by GitHub as a digest
+//    on the release asset -- the workflow's CC_SDK_SHA256 is that digest)
+//   -PccSdkJar=<file> (or CC_SDK_JAR) still wins and is checked for existence, for
+//   offline builds or an internal mirror; that is what Dockerfile.prod passes.
+//   -PccSdkVersion picks a different release tag.
 // ---------------------------------------------------------------------------
 def hmsHome = (project.findProperty('hmsHome') ?: System.getenv('HMS_HOME') ?: '/hms').toString()
 def ccSdkJar = (project.findProperty('ccSdkJar') ?: System.getenv('CC_SDK_JAR') ?: '').toString().trim()
 def ccSdkVersion = (project.findProperty('ccSdkVersion') ?: System.getenv('CC_SDK_VERSION') ?: '1.1.2').toString()
-// Image builds stamp the release tag in here; the runtime launcher locates the
-// jar by glob, so the name is free to change.
+def javaCompat = JavaVersion.toVersion(
+    (project.findProperty('javaCompat') ?: System.getenv('JAVA_COMPAT') ?: '17').toString())
+// Image builds stamp the release tag in here; the runtime launcher locates the jar
+// by glob, so the name is free to change.
 def runnerVersion = (project.findProperty('runnerVersion') ?: System.getenv('RUNNER_VERSION') ?: '0.0.1').toString()
+
+// HEC-HMS native libraries, in search order. bin/javaHeclib is where 4.14 put
+// libjavaHeclib.so; 4.13 had it directly under bin/. The JVM skips entries that do
+// not exist, so one value serves both releases. This must stay in step with
+// .vscode/launch.json and Dockerfile.prod's JAVA_TOOL_OPTIONS -- an IDE run that
+// works while CI fails is worse than neither working.
+def hmsNativePath = "${hmsHome}/bin/gdal:${hmsHome}/bin:${hmsHome}/bin/javaHeclib:" +
+        "${hmsHome}/bin/taudem:${hmsHome}/bin/mpi:${hmsHome}/jre/bin:${hmsHome}/jre/lib"
 
 // Fail with a readable message instead of a wall of "package mil.army.usace.hec
 // does not exist" errors when the paths are wrong.
 if (!file("${hmsHome}/hms.jar").exists()) {
     throw new GradleException("HEC-HMS not found: ${hmsHome}/hms.jar does not exist. " +
             "Pass -PhmsHome=/path/to/hms or set HMS_HOME (default /hms, where " +
-            "Dockerfile_13_6 installs it).")
+            "Dockerfile_13_6 and Dockerfile_14 install it).")
+}
+
+// Asking a Java 17 javac for Java 21 classes produces "class file has wrong version
+// 65.0, should be 61.0" twenty-six times, which reads like an API break and is not
+// one. Name the actual mismatch, including the Gradle ceiling.
+if (JavaVersion.current() < javaCompat) {
+    throw new GradleException("build.gradle: javaCompat=${javaCompat} but Gradle is running on " +
+            "Java ${JavaVersion.current()}. Use a builder JDK >= ${javaCompat} " +
+            "(BUILDER_BASE_IMAGE in Dockerfile.prod; eclipse-temurin:${javaCompat}-jdk locally) " +
+            "and a Gradle that can execute on it -- Gradle 7.3.1 stops at Java 17, so a " +
+            "Java 21 build needs Gradle >= 8.5.")
 }
 
 // Empty means "resolve it from the release" via the ivy repository below.
@@ -55,20 +75,20 @@ if (ccSdkFromLocalJar && !file(ccSdkJar).exists()) {
 
 def ccSdkDependency = ccSdkFromLocalJar ? files(ccSdkJar) : "usace.cc:cc-java-sdk:${ccSdkVersion}"
 
-println 'hms-runner build: HEC-HMS ' + hmsHome + ', cc-java-sdk ' +
+println 'hms-runner build: HEC-HMS ' + hmsHome + ', Java ' + javaCompat +
+        ' (Gradle JVM ' + JavaVersion.current() + '), cc-java-sdk ' +
         (ccSdkFromLocalJar ? 'local jar ' + ccSdkJar : 'usace.cc:cc-java-sdk:' + ccSdkVersion + ' from the GitHub release')
 
 //Dependency Management
 repositories {
     mavenCentral()
-    maven { url "https://www.hec.usace.army.mil/nexus/repository/maven-public/" }
+    maven { url = "https://www.hec.usace.army.mil/nexus/repository/maven-public/" }
     if (!ccSdkFromLocalJar) {
-        // Release assets are plain files with no POM, so the download URL is
-        // spelled out as an Ivy pattern:
-        //   {url}/v{version}/cc-java-sdk-{version}-all.jar
-        // metadataSources { artifact() } says the artifact IS the module --
-        // right for an -all fat jar, which already carries its dependencies, so
-        // there is nothing transitive left to describe.
+        // Release assets are plain files with no POM, so the download URL is spelled
+        // out as an Ivy pattern:  {url}/v{version}/cc-java-sdk-{version}-all.jar
+        // metadataSources { artifact() } says the artifact IS the module -- right for
+        // an -all fat jar, which already carries its dependencies, so there is nothing
+        // transitive left to describe.
         ivy {
             name = 'ccJavaSdkReleases'
             url = 'https://github.com/USACE-Cloud-Compute/cc-java-sdk/releases/download'
@@ -89,6 +109,14 @@ configurations {
     linux_x64
 }
 
+java {
+    // These used to sit inside jar{}, where they only worked because Groovy fell back
+    // to the project-level conventions that Gradle 9 removed:
+    //   Could not set unknown property 'sourceCompatibility' for task ':jar'
+    sourceCompatibility = javaCompat
+    targetCompatibility = javaCompat
+}
+
 dependencies {
     implementation files("${hmsHome}/hms.jar")
     implementation ccSdkDependency
@@ -99,16 +127,6 @@ dependencies {
     testImplementation files("${hmsHome}/hms.jar")
     testImplementation fileTree(dir: "${hmsHome}/lib", include: '*.jar')
     testImplementation ccSdkDependency
-}
-// HEC-HMS 4.13 is Java 17 bytecode, 4.14 is Java 21 (class file 65.0). The
-// Gradle JVM must be at least as new as the HMS classes being linked, so a
-// 4.14 build needs -PjavaCompat=21 on a temurin:21-jdk builder.
-def javaCompat = JavaVersion.toVersion(
-    (project.findProperty('javaCompat') ?: System.getenv('JAVA_COMPAT') ?: '17').toString())
-
-java {
-    sourceCompatibility = javaCompat
-    targetCompatibility = javaCompat
 }
 
 jar {
@@ -130,7 +148,7 @@ test {
 }
 
 tasks.withType(Test) {
-    systemProperty "java.library.path", "${hmsHome}/bin/gdal:${hmsHome}/bin:${hmsHome}/bin/taudem:${hmsHome}/bin/mpi:${hmsHome}/jre/bin:${hmsHome}/jre/lib"
+    systemProperty "java.library.path", hmsNativePath
 }
 
 group 'mil.army.usace.hec'

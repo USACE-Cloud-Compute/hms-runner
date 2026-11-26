@@ -1,39 +1,58 @@
-# Builds Dockerfile.prod for every supported HEC-HMS version and pushes the
-# images to GHCR when a release is published.
+# Builds Dockerfile.prod for every supported HEC-HMS version and pushes the images
+# to GHCR when a release is published.
 #
-# Tags published for release v1.2.3:
-#
-#   hms-runner:1.2.3-hms4.13   hms-runner:hms4.13   hms-runner:latest
+# Tags for release v1.2.3:  hms-runner:1.2.3-hms4.13, hms-runner:hms4.13, and
+# hms-runner:latest from the row marked default: true.
 #
 # linux/amd64 only: the HEC-HMS artifact is linux64.
 #
-# SUPPORTED HEC-HMS VERSIONS -- the `matrix.include` list below is the whole
-# policy (always quote the version, see the note there). Pin the immutable
-# `<runner version>-hms<hms version>` tag in any compute manifest or plugin
-# definition; `latest` and `hms<version>` both move, and `latest` follows
-# whichever entry is `default: true`.
+# ---------------------------------------------------------------------------
+# ONE MATRIX ROW = ONE COMPLETE TOOLCHAIN
+#
+# A HEC-HMS release pins more than an artifact. Every key below feeds one build-arg
+# of Dockerfile.prod, so a new release is one row, never an edit in four places:
+#
+#   hms              -> HMS_VERSION          the artifact itself
+#   builderImage     -> BUILDER_BASE_IMAGE   javac must be >= the release's class-file
+#                                            target (4.14 is 65.0)
+#   gradleVersion    -> GRADLE_VERSION       Gradle must be able to EXECUTE on that JDK
+#   javaCompat       -> JAVA_COMPAT          emitted bytecode; must be <= runtimeJava
+#   runtimeJava      -> RUNTIME_JAVA         apt JRE package + the ENTRYPOINT runtime
+#   runtimeBaseImage -> RUNTIME_BASE_IMAGE   must ship openjdk-<runtimeJava>
+#   tarballUrl       -> HMS_TARBALL_URL      optional, when HEC's artifact name matches
+#                                            neither probe shape
+#
+# Why each exists, all learned from 4.14:
+#   * 4.14's hms.jar is class file 65.0; Java 17 javac cannot read it. The failure is
+#     26 errors starting "class file has wrong version 65.0, should be 61.0" and it
+#     looks exactly like an API change. It is not one.
+#   * Gradle 7.3.1 cannot execute on Java 21 (it supports 8-17), so JDK and Gradle move
+#     together; Java 21 needs Gradle >= 8.5.
+#   * 21 bytecode on a 17 JRE dies at start with UnsupportedClassVersionError, and the
+#     old smoke test could not see that: it hard-coded java-17-openjdk-amd64.
+#   * 4.14 moved libjavaHeclib.so from bin/ to bin/javaHeclib/. Such a leg compiles and
+#     starts clean, then dies inside Project.open with UnsatisfiedLinkError.
+#   * Wrong PROJ/GDAL paths do not fail a run, they print
+#     "ERROR 1: PROJ: proj_create_from_database: Cannot find proj.db" and let the
+#     simulation complete. Asserted now, because a green-but-wrong leg is the worst
+#     outcome available.
 #
 # Deliberately absent, and why (CI cannot work this out on its own):
-#
-#   4.14         TURNED OFF 2026-11-26. `4.14-linux64` exists in Nexus and the
-#                download succeeds; the plugin then fails to COMPILE against it
-#                (run 45734328618, hms 4.14 leg, gradle exit 1). Commented out in
-#                the matrix below - fix the compile errors first, then dry_run it.
-#   4.12         compiles, builds and starts green, but HEC-HMS 4.12 has no
-#                excess-precipitation export action, so the image cannot serve
-#                the real workloads. A leg that passes and is wrong is worse
-#                than no leg -- do not re-add this until that export is proven.
-#   4.13-beta.6  superseded by the 4.13 release; it was only ever the default
-#                baked into Dockerfile.prod, and nothing published is pinned to it.
+#   4.12         builds and starts green, but has no excess-precipitation export
+#                action, so the image cannot serve real workloads.
+#   4.13-beta.6  superseded by the 4.13 release; nothing published is pinned to it.
 #   4.15-beta.2  HEC publishes no linux64 build of it (macOS and win-x64 only).
-#   4.15-beta.1  has a linux64 build; add `- hms: "4.15-beta.1"` when wanted, then
-#                run it once with dry_run before trusting the answer.
+#   4.15-beta.1  HAS a linux64 build: add a row, expect the Java 21 / Gradle 9 toolchain
+#                and bin/javaHeclib like 4.14, and dry_run before trusting the answer.
 #
-# Testing a version without publishing anything: run the workflow_dispatch with
-# dry_run ticked, or locally:
-#
-#   docker build -f Dockerfile.prod --build-arg HMS_VERSION=4.13 \
-#     --build-arg CC_SDK_SHA256="$CC_SDK_SHA256" -t hms-runner:local-4.13 .
+# Testing a version without publishing: dispatch with dry_run ticked, or locally (all
+# four new args default to today's 4.13 toolchain):
+#   docker build -f Dockerfile.prod --build-arg HMS_VERSION=4.14 \
+#     --build-arg BUILDER_BASE_IMAGE=eclipse-temurin:21-jdk \
+#     --build-arg GRADLE_VERSION=9.7.1 --build-arg JAVA_COMPAT=21 \
+#     --build-arg RUNTIME_JAVA=21 --build-arg RUNTIME_BASE_IMAGE=ubuntu:24.04 \
+#     --build-arg CC_SDK_SHA256="$CC_SDK_SHA256" -t hms-runner:local-4.14 .
+
 name: Build & Publish (Dockerfile.prod to GHCR)
 
 on:
@@ -55,45 +74,60 @@ env:
   # Lowercase, unlike the org login -- ghcr.io rejects uppercase image names.
   IMAGE: ghcr.io/usace-cloud-compute/hms-runner
   DOCKERFILE: Dockerfile.prod
-  # cc-java-sdk-1.1.2-all.jar is a 92 MB binary and is not committed here, so it
-  # is fetched from the cc-java-sdk release and verified against this digest.
-  # Empty still builds, but the image is then unverified -- paste the real value
-  # before trusting anything published:
-  #   sha256sum cc-java-sdk-1.1.2-all.jar   # same jar as ressim-runner gates
+  # cc-java-sdk-1.1.2-all.jar is a 92 MB binary and is not committed here, so it is
+  # fetched from the release and verified against this digest. GitHub publishes the
+  # digest on the release asset itself, so this is authoritative -- an empty value
+  # meant every published image was built from an unverified artifact.
   CC_SDK_VERSION: '1.1.2'
-  CC_SDK_SHA256: ''
+  CC_SDK_SHA256: 'a245a7cdc89c5512d865eaf0b85d3d056af1821ae6dda7c6b7610a22e3840cd0'
 
 jobs:
   build:
-    name: hms ${{ matrix.hms }}
+    # The toolchain is in the job name: when two legs fail differently it is nearly
+    # always the toolchain, and the log has to say which one this was.
+    name: hms ${{ matrix.hms }} (java ${{ matrix.javaCompat }}, gradle ${{ matrix.gradleVersion }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
-      # Every leg pulls ~1 GB from HEC Nexus. If the download step starts failing
-      # with HTTP 429/5xx, uncomment this so the legs stop sharing one GitHub
-      # source IP at the same moment.
+      # Every leg pulls ~1 GB from HEC Nexus. If downloads start failing with 429/5xx,
+      # uncomment so the legs stop sharing one source IP at the same moment.
       # max-parallel: 1
       # A broken leg must not hide a good one.
       fail-fast: false
       matrix:
         include:
-          # Quote the versions: unquoted YAML reads 4.13 as a number, and 4.10
-          # would silently become "4.1" in the tag and in the tarball URL.
+          # Quote every version. Unquoted YAML reads 4.13 as a number, and 4.10 would
+          # silently become "4.1" in the tag and in the tarball URL; the Java and Gradle
+          # numbers have the same trap.
           - hms: "4.13"
-            default: true
+            default: false
+            builderImage: eclipse-temurin:17-jdk
+            gradleVersion: "7.3.1"
+            javaCompat: "17"
+            runtimeJava: "17"
             runtimeBaseImage: ubuntu:20.04
-            # Optional escape hatch when HEC's artifact name does not match either
-            # shape the Dockerfile probes -- it tries
-            #   hec-hms-<ver>-<platform>-<platform>.tar.gz and
-            #   hec-hms-<ver>-<platform>.tar.gz
-            # and 4.13 needs the first while 4.14 needs the second. To pin one:
-            # tarballUrl: https://.../hec-hms-4.13-linux64-linux64.tar.gz
-          # 4.14 turned off 2026-11-26: hec-hms-4.14-linux64.tar.gz downloads
-          # fine, then gradle fails to compile the plugin against it. Uncomment
-          # these two lines once those compile errors are fixed, and dry_run it
-          # before cutting a release.
-          # - hms: "4.14"
-          #   default: false
+            # 4.13 needs the doubled platform name
+            # (hec-hms-4.13-linux64-linux64.tar.gz), which the Dockerfile's first probe
+            # shape finds. runtimeBaseImage stays 20.04 to preserve today's published
+            # glibc -- changing it is a separate decision from adding a toolchain axis.
+
+          - hms: "4.14"
+            default: true
+            builderImage: eclipse-temurin:21-jdk
+            gradleVersion: "9.7.1"
+            javaCompat: "21"
+            runtimeJava: "21"
+            # Cannot reuse the 4.13 base: ubuntu:20.04 has no openjdk-21-jre-headless.
+            # That is precisely why runtimeBaseImage is a per-row key and not a
+            # workflow-level env value.
+            runtimeBaseImage: ubuntu:24.04
+            # 4.14 uses the single-token name (hec-hms-4.14-linux64.tar.gz), which the
+            # second probe shape finds -- no tarballUrl needed.
+            # default stays false: promoting 4.14 to `latest` is a decision, not a side
+            # effect of it finally building.
+
+          # Escape hatch when HEC's artifact name matches neither probe shape:
+          #   tarballUrl: https://.../hec-hms-4.14-linux64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -115,22 +149,25 @@ jobs:
             {
               echo "version=${version}"
               echo "primary=${local_tag}"
-              echo "tags<<TAGS"
+              echo "tags<<EOF"
               echo "${local_tag}"
-              echo "TAGS"
+              echo "EOF"
             } >> "$GITHUB_OUTPUT"
             echo "dry run: ${local_tag} only, nothing pushed"
           else
             {
               echo "version=${version}"
               echo "primary=${IMAGE}:${image_version}-hms${HMS}"
-              echo "tags<<TAGS"
+              echo "tags<<EOF"
               echo "${IMAGE}:${image_version}-hms${HMS}"
               echo "${IMAGE}:hms${HMS}"
+              # The README has always promised `latest` follows the default leg; the
+              # workflow never pushed it. Guarded by IS_DEFAULT so no leg claims it
+              # twice. Delete this if publishing `latest` is not what you want.
               if [ "${IS_DEFAULT}" = "true" ]; then
                 echo "${IMAGE}:latest"
               fi
-              echo "TAGS"
+              echo "EOF"
             } >> "$GITHUB_OUTPUT"
             echo "tags for ${image_version} / HEC-HMS ${HMS}:"
             printf '  %s\n' "${IMAGE}:${image_version}-hms${HMS}" "${IMAGE}:hms${HMS}"
@@ -159,6 +196,10 @@ jobs:
           build-args: |
             HMS_VERSION=${{ matrix.hms }}
             HMS_TARBALL_URL=${{ matrix.tarballUrl }}
+            BUILDER_BASE_IMAGE=${{ matrix.builderImage }}
+            GRADLE_VERSION=${{ matrix.gradleVersion }}
+            JAVA_COMPAT=${{ matrix.javaCompat }}
+            RUNTIME_JAVA=${{ matrix.runtimeJava }}
             RUNTIME_BASE_IMAGE=${{ matrix.runtimeBaseImage }}
             RUNNER_VERSION=${{ steps.tags.outputs.version }}
             CC_SDK_VERSION=${{ env.CC_SDK_VERSION }}
@@ -167,14 +208,24 @@ jobs:
             org.opencontainers.image.title=HEC-HMS Runner
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.tags.outputs.image_version }}
-          # Scope the cache per HEC-HMS version: the ~1 GB tarball layer is what
-          # makes a leg slow, and an unscoped cache lets matrix legs evict each
-          # other out of it.
-          cache-from: type=gha,scope=hms-${{ matrix.hms }}
-          cache-to: type=gha,mode=max,scope=hms-${{ matrix.hms }}
-          # A plain image manifest: buildx's default attestation makes the pushed
-          # digest an attestation index, which older container stacks refuse.
+            org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+            # Toolchain provenance, so `docker inspect` can answer "which HEC-HMS and
+            # which JVM is in this tag?" without rebuilding it. Bytecode level and
+            # runtime JRE are the pair that must not be crossed, and a floating hms4.14
+            # tag carries no other clue.
+            io.github.usace-cloud-compute.hms.version=${{ matrix.hms }}
+            io.github.usace-cloud-compute.hms.bytecode=${{ matrix.javaCompat }}
+            io.github.usace-cloud-compute.hms.runtime-java=${{ matrix.runtimeJava }}
+            io.github.usace-cloud-compute.hms.gradle=${{ matrix.gradleVersion }}
+            io.github.usace-cloud-compute.cc-java-sdk.version=${{ env.CC_SDK_VERSION }}
+          # Scope the cache per leg. The ~1 GB tarball layer is what makes a leg slow,
+          # and an unscoped cache lets legs evict each other. The toolchain is in the
+          # scope now: two rows sharing an HMS version but not a Gradle/JDK must not
+          # read each other's layers.
+          cache-from: type=gha,scope=hms-${{ matrix.hms }}-j${{ matrix.runtimeJava }}-g${{ matrix.gradleVersion }}
+          cache-to: type=gha,mode=max,scope=hms-${{ matrix.hms }}-j${{ matrix.runtimeJava }}-g${{ matrix.gradleVersion }}
+          # A plain image manifest: buildx's default attestation makes the pushed digest
+          # an attestation index, which older container stacks refuse.
           provenance: false
           sbom: false
 
@@ -182,46 +233,110 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.tags.outputs.primary }}
           HMS: ${{ matrix.hms }}
+          JAVA_COMPAT: ${{ matrix.javaCompat }}
+          RUNTIME_JAVA: ${{ matrix.runtimeJava }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           if [ "${DRY_RUN:-false}" = "true" ]; then
             ref="${IMAGE_REF}"
           else
-            # `push: true` leaves nothing in the local daemon, so pull the tag
-            # back: this checks what the registry is serving, not the build cache.
+            # `push: true` leaves nothing in the local daemon, so pull the tag back:
+            # this checks what the registry is serving, not the build cache.
             docker pull --quiet "${IMAGE_REF}" > /dev/null
             ref="${IMAGE_REF}"
           fi
 
-          # 1. The image must carry its own HMS install, a runnable jar at the
-          #    path the ENTRYPOINT names, and the native library path the JVM
-          #    picks up from JAVA_TOOL_OPTIONS.
-          docker run --rm --entrypoint sh "$ref" -c '
+          # 1. Layout, and the toolchain the image CLAIMS vs the one it RUNS. The JRE
+          #    path used to be a literal java-17 here, so an image shipping 21 bytecode
+          #    on a 17 JRE could still pass: the check was asserting another leg.
+          docker run --rm -e RUNTIME_JAVA --entrypoint sh "$ref" -c '
             set -eu
-            JRE=/usr/lib/jvm/java-17-openjdk-amd64/bin/java
-            test -x "$JRE" || { echo "FAIL: $JRE missing (apt JRE gone?)"; exit 1; }
+            JRE=/usr/lib/jvm/java-"${RUNTIME_JAVA}"-openjdk-amd64/bin/java
+            test -x "$JRE" || { echo "FAIL: $JRE missing (apt JRE gone? wrong runtimeJava?)"; exit 1; }
+            "$JRE" -version 2>&1 | head -n 1 | grep -Eq "\"${RUNTIME_JAVA}[.\"]" \
+              || { echo "FAIL: $JRE is not Java ${RUNTIME_JAVA}"; "$JRE" -version; exit 1; }
+            # The ENTRYPOINT cannot name a version-specific path (Docker does not expand
+            # ${VAR} in an exec-form array), so the image publishes one stable name for
+            # whatever apt JRE this leg installed.
+            test -x /usr/local/bin/hms-runner-java \
+              || { echo "FAIL: /usr/local/bin/hms-runner-java missing"; exit 1; }
+            [ "$(readlink -f /usr/local/bin/hms-runner-java)" = "$JRE" ] \
+              || { echo "FAIL: hms-runner-java does not resolve to $JRE"; exit 1; }
             test -f /hms/hms-runner.jar || { echo "FAIL: /hms/hms-runner.jar absent"; ls -l /hms; exit 1; }
             test -f "${HMS_HOME}/hms.jar" || { echo "FAIL: ${HMS_HOME}/hms.jar absent"; exit 1; }
             test -d "${HMS_HOME}/bin/gdal" || { echo "FAIL: ${HMS_HOME}/bin/gdal missing"; exit 1; }
-            "$JRE" -XshowSettings:properties -version 2>&1 \
-              | grep -q "${HMS_HOME}/bin/gdal" \
+            # The native Project.open needs. 4.13 keeps it in bin/, 4.14 moved it to
+            # bin/javaHeclib/, so search rather than assume either.
+            hecdir="$(find "${HMS_HOME}" -name "libjavaHeclib*" -printf "%h\n" 2>/dev/null | sort -u | head -n 1)"
+            test -n "${hecdir}" || { echo "FAIL: no libjavaHeclib.so under ${HMS_HOME}"; exit 1; }
+            echo "libjavaHeclib: ${hecdir}"
+            # ...and it must be on the path the JVM was actually given, or the run dies
+            # later with UnsatisfiedLinkError. This is the check 4.14 needed.
+            "$JRE" -XshowSettings:properties -version 2>&1 | tr ":" "\n" | grep -qx "${hecdir}" \
+              || { echo "FAIL: java.library.path does not contain ${hecdir}"; exit 1; }
+            "$JRE" -XshowSettings:properties -version 2>&1 | grep -q "${HMS_HOME}/bin/gdal" \
               || { echo "FAIL: java.library.path did not reach the JVM"; exit 1; }
-            echo "layout OK: ${HMS_HOME}"'
+            # Wrong PROJ/GDAL paths do not fail a run, they degrade it silently.
+            test -n "${PROJ_LIB:-}" || { echo "FAIL: PROJ_LIB not set in the image"; exit 1; }
+            test -f "${PROJ_LIB}/proj.db" || { echo "FAIL: ${PROJ_LIB}/proj.db missing"; exit 1; }
+            test -n "${GDAL_DATA:-}" || { echo "FAIL: GDAL_DATA not set in the image"; exit 1; }
+            test -d "${GDAL_DATA}" || { echo "FAIL: ${GDAL_DATA} missing"; exit 1; }
+            # Bytecode of the shipped jar vs the JRE that has to load it. Best-effort:
+            # it needs unzip, which a minimal runtime image may not carry. Step 2 is the
+            # hard gate -- a 21-bytecode jar on a 17 JRE dies there with
+            # UnsupportedClassVersionError -- so skip rather than fail when unzip is
+            # absent, and never let a missing debug tool fail a good leg.
+            if command -v unzip >/dev/null 2>&1; then
+              major="$(unzip -p /hms/hms-runner.jar usace/cc/plugin/hmsrunner/HmsRunner.class \
+                       | od -An -tu1 -j7 -N1 | tr -d " ")"
+              echo "hms-runner.jar bytecode major: ${major}"
+              [ "${major}" -le $((44 + RUNTIME_JAVA)) ] \
+                || { echo "FAIL: jar is bytecode ${major} but the runtime JRE is ${RUNTIME_JAVA}"; exit 1; }
+            else
+              echo "NOTE: no unzip in the image; skipping the bytecode check (step 2 catches it)"
+            fi
+            echo "layout OK: ${HMS_HOME}, runtime Java ${RUNTIME_JAVA}"'
 
-          # 2. Start the runner. With no payload it must fail for a *runtime*
-          #    reason; a link or class-load failure here means this HEC-HMS
-          #    version does not agree with what the plugin was compiled against.
+          # 2. Start with no payload: must fail for a RUNTIME reason. A link or
+          #    class-load failure means this HEC-HMS version does not agree with what
+          #    the plugin was compiled against.
           set +e
           out="$(docker run --rm "${ref}" 2>&1)"
           rc=$?
           set -e
           printf '%s\n' "${out}" | tail -n 15
-          # Evidence the JVM applied the library path, printed by the JVM itself.
           printf '%s' "${out}" | grep -q 'Picked up JAVA_TOOL_OPTIONS' \
             || { echo "FAIL: JAVA_TOOL_OPTIONS was not applied"; exit 1; }
           if printf '%s' "${out}" | grep -Eq 'UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException'; then
             echo "FAIL: HEC-HMS ${HMS} did not load: ${out}" | tail -n 30
             exit 1
           fi
-          echo "smoke test OK for HEC-HMS ${HMS} (exit ${rc}, no linking errors)"
+          echo "start check OK for HEC-HMS ${HMS} (exit ${rc}, no linking errors)"
+
+          # 3. Run the committed Muncie model end to end. This is what separates a
+          #    building image from a working one: it loads libjavaHeclib, opens a DSS,
+          #    reads GDAL/PROJ-backed data and writes the result back through the store.
+          #    Every 4.14 surprise in this repo outlived the two checks above.
+          set +e
+          out3="$(docker run --rm \
+            --env-file testdata/muncie/.env-mnt \
+            -v "$PWD/testdata/muncie/mnt-payload:/model/mnt-payload" \
+            -v "$PWD/testdata/muncie/hms:/mount" \
+            "${ref}" 2>&1)"
+          rc3=$?
+          set -e
+          printf '%s\n' "${out3}" | tail -n 20
+          printf '%s' "${out3}" | grep -q 'Simulation run completed' \
+            || { echo "FAIL: Muncie did not complete on HEC-HMS ${HMS} (exit ${rc3})"; exit 1; }
+          if printf '%s' "${out3}" | grep -q 'Cannot find proj.db'; then
+            echo "FAIL: PROJ could not find proj.db -- the run completed but the result is suspect"
+            exit 1
+          fi
+          if printf '%s' "${out3}" | grep -Eq 'UnsatisfiedLinkError|Exception in thread'; then
+            echo "FAIL: exception during the Muncie run on HEC-HMS ${HMS}"
+            exit 1
+          fi
+          test -s testdata/muncie/hms/Dec2013_output.dss \
+            || echo "NOTE: no Dec2013_output.dss in the mounted model dir; check the payload output path"
+          echo "smoke test OK for HEC-HMS ${HMS} (bytecode ${JAVA_COMPAT}, runtime Java ${RUNTIME_JAVA})"

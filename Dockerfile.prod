@@ -32,7 +32,11 @@
 #      Note the ENTRYPOINT names the apt JRE by absolute path, not `java`: this
 #      image's PATH puts ${HMS_HOME}/jre/bin first (inherited from the original
 #      image), so a bare `java` would silently run HEC-HMS's bundled JRE instead
-#      of the Java 17 runtime the jar is compiled for.
+#      of the apt JRE the jar is compiled for. That path is no longer literal
+#      because RUNTIME_JAVA varies per release: the image installs a stable name,
+#      /usr/local/bin/hms-runner-java, pointing at java-${RUNTIME_JAVA}, and the
+#      ENTRYPOINT names that. Exec form still cannot expand ${VAR}, and the
+#      absolute-path discipline still applies.
 #
 # Air-gapped / internal-mirror builds: put HEC-HMS at /opt/hms and the SDK jar at
 # /workspaces/deps/cc-java-sdk-all.jar in BUILDER_BASE_IMAGE, then pass
@@ -74,6 +78,13 @@ ARG CC_SDK_SHA256=
 ARG SKIP_CC_SDK_DOWNLOAD=false
 
 ARG GRADLE_VERSION=7.3.1
+# Bytecode level the runner is compiled for. Must match the HEC-HMS release's own
+# class-file target: 4.13 -> 17, 4.14 -> 21. Passed to build.gradle as -PjavaCompat.
+ARG JAVA_COMPAT=17
+# Major version of the JRE the runtime stage installs and the ENTRYPOINT runs.
+# Must be >= JAVA_COMPAT, and RUNTIME_BASE_IMAGE must ship openjdk-<n>-jre
+# (ubuntu:20.04 has no 21, which is why the 4.14 leg runs on 24.04).
+ARG RUNTIME_JAVA=17
 # Stamped into the jar name by build.gradle; the prod stage copies that jar to
 # one fixed path so the ENTRYPOINT can be a literal.
 ARG RUNNER_VERSION=0.0.1
@@ -84,6 +95,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/gradle/latest/bin:/usr/local/bin:/usr/bin:/bin \
     HMS_HOME=${HMS_HOME} \
     HMS_VERSION=${HMS_VERSION} \
+    JAVA_COMPAT=${JAVA_COMPAT} \
     CC_SDK_JAR=/workspaces/deps/cc-java-sdk-all.jar
 
 RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -202,7 +214,8 @@ RUN set -eux; \
 WORKDIR /workspaces/hms-runner
 COPY . .
 
-# gradle 7.3.1 is the version the images have always used. This repo ships
+# GRADLE_VERSION comes from the matrix: 7.3.1 for the Java 17 releases, but Gradle
+# 7.3.1 cannot execute on Java 21, so the 4.14 leg passes 9.7.1. This repo ships
 # gradle/wrapper/gradle-wrapper.properties but NOT gradle-wrapper.jar, so
 # ./gradlew cannot be used until that jar is committed (or regenerated with
 # `gradle wrapper`).
@@ -218,6 +231,7 @@ RUN --mount=type=cache,target=/root/.gradle \
     gradle --no-daemon --console=plain --stacktrace \
         -PhmsHome="${HMS_HOME}" \
         -PccSdkJar="${CC_SDK_JAR}" \
+        -PjavaCompat="${JAVA_COMPAT}" \
         -PrunnerVersion="${RUNNER_VERSION}" \
         build -x test; \
     ls -l build/libs
@@ -229,6 +243,10 @@ FROM ${RUNTIME_BASE_IMAGE} AS prod
 
 ARG HMS_VERSION
 ARG HMS_HOME=/opt/hms
+# Defaulted, not inherited: ARG values do not cross stage boundaries, so without
+# a value here a plain `docker build -f Dockerfile.prod --build-arg HMS_VERSION=4.13`
+# would ask apt for "openjdk--jre". The matrix always passes it explicitly.
+ARG RUNTIME_JAVA=17
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=America/New_York
@@ -238,7 +256,7 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         libxrender1 libxtst6 libxi6 libfreetype6 libgfortran5 libfontconfig1 \
-        openjdk-17-jre ca-certificates
+        openjdk-${RUNTIME_JAVA}-jre ca-certificates
 
 ENV HMS_HOME=${HMS_HOME} \
     PROG=hms.hms \
@@ -246,12 +264,18 @@ ENV HMS_HOME=${HMS_HOME} \
     GDAL_DATA=${HMS_HOME}/bin/gdal/gdal-data \
     PROJ_LIB=${HMS_HOME}/bin/gdal/proj \
     CLASSPATH=${HMS_HOME}/*:${HMS_HOME}/lib/*:${HMS_HOME}/lib/hec/*:${HMS_HOME}/jre/lib/* \
-    JAVA_TOOL_OPTIONS=-Djava.library.path=${HMS_HOME}/bin/gdal:${HMS_HOME}/bin:${HMS_HOME}/bin/taudem:${HMS_HOME}/bin/mpi:${HMS_HOME}/jre/bin:${HMS_HOME}/jre/lib/
+    JAVA_TOOL_OPTIONS=-Djava.library.path=${HMS_HOME}/bin/gdal:${HMS_HOME}/bin:${HMS_HOME}/bin/javaHeclib:${HMS_HOME}/bin/taudem:${HMS_HOME}/bin/mpi:${HMS_HOME}/jre/bin:${HMS_HOME}/jre/lib/
 
 # ${HMS_HOME} is the same string in every image, so the native library path has
 # no version in it either. It travels as JAVA_TOOL_OPTIONS because the JVM reads
 # that at startup, which lets the ENTRYPOINT stay a literal array. To override
 # it, set JAVA_TOOL_OPTIONS on the container (it replaces the whole value).
+# bin/javaHeclib is where HEC-HMS 4.14 moved libjavaHeclib.so; 4.13 had it in
+# bin/, which is already listed. A directory that does not exist is skipped by
+# the JVM, so one value serves both releases -- and a missing one is a runtime
+# UnsatisfiedLinkError inside Project.open, after a clean compile and a clean
+# start, which is why the verification step below asserts it instead of trusting
+# this line.
 COPY --from=builder ${HMS_HOME}/ ${HMS_HOME}/
 COPY --from=builder /workspaces/deps/cc-java-sdk-all.jar ${HMS_HOME}/lib/
 # One jar in, fixed name out. If gradle ever leaves two hms-runner-*.jar files
@@ -262,10 +286,21 @@ RUN set -eux; \
     ln -sfn "${HMS_HOME}" "/HEC-HMS-${HMS_VERSION}"; \
     test -f "${HMS_HOME}/hms.jar"; \
     test -f /hms/hms-runner.jar; \
-    test -x /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+    test -x /usr/lib/jvm/java-${RUNTIME_JAVA}-openjdk-amd64/bin/java; \
+    test -f "${PROJ_LIB}/proj.db"; \
+    test -d "${GDAL_DATA}"; \
+    hecdir="$(find "${HMS_HOME}" -name 'libjavaHeclib*' -printf '%h\n' | sort -u | head -n 1)"; \
+    test -n "${hecdir}" || { echo "FAIL: no libjavaHeclib.so under ${HMS_HOME}"; exit 1; }; \
+    echo "libjavaHeclib: ${hecdir}"; \
+    echo "${JAVA_TOOL_OPTIONS}" | sed 's/^[^=]*=//' | tr ':' '\n' | grep -qx "${hecdir}" \
+      || { echo "FAIL: ${hecdir} is not an entry of java.library.path in JAVA_TOOL_OPTIONS"; exit 1; }
+
+# One stable name for the apt JRE this leg installed, so the ENTRYPOINT stays a
+# literal and the smoke test can assert the symlink resolves to the expected runtime.
+RUN ln -sfn /usr/lib/jvm/java-${RUNTIME_JAVA}-openjdk-amd64/bin/java /usr/local/bin/hms-runner-java
 
 # Parity with the old image (its `WORKDIR hms` resolved to /hms). The runner
 # should probably get a writable scratch dir instead - tracked as a follow-up.
 WORKDIR /hms
 
-ENTRYPOINT ["/usr/lib/jvm/java-17-openjdk-amd64/bin/java", "-jar", "/hms/hms-runner.jar"]
+ENTRYPOINT ["/usr/local/bin/hms-runner-java", "-jar", "/hms/hms-runner.jar"]
