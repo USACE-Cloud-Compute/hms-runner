@@ -38,6 +38,11 @@
 # /workspaces/deps/cc-java-sdk-all.jar in BUILDER_BASE_IMAGE, then pass
 #   --build-arg SKIP_HMS_DOWNLOAD=true --build-arg SKIP_CC_SDK_DOWNLOAD=true
 # (or point HMS_TARBALL_URL / CC_SDK_URL at the internal mirror).
+#
+# Every download uses curl, not `wget -q`. A failed fetch must print the HTTP
+# status and the URL and retry transient 429/5xx - two matrix legs can pull ~1 GB
+# from the same GitHub source IP at the same moment. `wget -q` reduced all of
+# that to "exit code 8" (run 45734328618), which cannot be diagnosed.
 
 # ---- global args (the only ones visible to FROM) ---------------------------
 ARG HMS_VERSION=4.13
@@ -99,8 +104,28 @@ RUN set -eux; \
     if [ -z "${url}" ]; then \
         url="${HMS_NEXUS_BASE}/mil/army/usace/hec/hec-hms/${HMS_VERSION}-${HMS_PLATFORM}/hec-hms-${HMS_VERSION}-${HMS_PLATFORM}.tar.gz"; \
     fi; \
-    echo "downloading ${url}"; \
-    wget -q -O /tmp/hms.tar.gz "${url}"; \
+    echo "GET ${url}"; \
+    code="$(curl -sS -L -o /tmp/hms.tar.gz -w '%{http_code}' \
+        --connect-timeout 20 --max-time 1800 \
+        --retry 5 --retry-delay 15 --retry-all-errors --retry-connrefused \
+        "${url}" || echo curl-error)"; \
+    if [ "${code}" != "200" ]; then \
+        echo "FAIL: HTTP ${code} fetching ${url}" >&2; \
+        echo "linux64 versions Nexus lists for hec-hms (last 12):" >&2; \
+        curl -sSL --max-time 60 \
+            "${HMS_NEXUS_BASE}/mil/army/usace/hec/hec-hms/maven-metadata.xml" \
+            | tr '<' '\n' | sed -n 's/^version>//p' | grep -- '-linux64$' | tail -n 12 >&2 \
+            || echo "  (could not read maven-metadata.xml)" >&2; \
+        echo "if the version is missing above it has no linux64 build: drop the leg, or mirror the tarball and pass HMS_TARBALL_URL" >&2; \
+        exit 1; \
+    fi; \
+    size="$(wc -c < /tmp/hms.tar.gz)"; \
+    echo "HTTP ${code}, ${size} bytes"; \
+    if [ "${size}" -lt 50000000 ]; then \
+        echo "FAIL: ${size} bytes is too small for a HEC-HMS tarball; first 400 bytes:" >&2; \
+        head -c 400 /tmp/hms.tar.gz >&2; exit 1; \
+    fi; \
+    gzip -t /tmp/hms.tar.gz; \
     rm -rf "${HMS_HOME}"; mkdir -p "${HMS_HOME}"; \
     tar -xzf /tmp/hms.tar.gz -C "${HMS_HOME}" --strip-components=1; \
     rm -f /tmp/hms.tar.gz; \
@@ -114,8 +139,27 @@ RUN set -eux; \
         echo "using pre-placed ${CC_SDK_JAR}"; \
         exit 0; \
     fi; \
-    wget -q -O /tmp/cc-java-sdk.jar \
-        "${CC_SDK_URL}/v${CC_SDK_VERSION}/cc-java-sdk-${CC_SDK_VERSION}-all.jar"; \
+    url="${CC_SDK_URL}/v${CC_SDK_VERSION}/cc-java-sdk-${CC_SDK_VERSION}-all.jar"; \
+    echo "GET ${url}"; \
+    code="$(curl -sS -L -o /tmp/cc-java-sdk.jar -w '%{http_code}' \
+        --connect-timeout 20 --max-time 900 \
+        --retry 5 --retry-delay 10 --retry-all-errors --retry-connrefused \
+        "${url}" || echo curl-error)"; \
+    if [ "${code}" != "200" ]; then \
+        echo "FAIL: HTTP ${code} fetching cc-java-sdk ${CC_SDK_VERSION} from ${url}" >&2; \
+        echo "check the release still exists: https://github.com/USACE-Cloud-Compute/cc-java-sdk/releases" >&2; \
+        exit 1; \
+    fi; \
+    size="$(wc -c < /tmp/cc-java-sdk.jar)"; \
+    echo "HTTP ${code}, ${size} bytes"; \
+    if [ "${size}" -lt 20000000 ]; then \
+        echo "FAIL: ${size} bytes is too small for the -all jar; first 400 bytes:" >&2; \
+        head -c 400 /tmp/cc-java-sdk.jar >&2; exit 1; \
+    fi; \
+    if ! unzip -t -qq /tmp/cc-java-sdk.jar > /dev/null; then \
+        echo "FAIL: the download is not a valid jar/zip" >&2; \
+        head -c 400 /tmp/cc-java-sdk.jar >&2; exit 1; \
+    fi; \
     if [ -n "${CC_SDK_SHA256}" ]; then \
         echo "${CC_SDK_SHA256}  /tmp/cc-java-sdk.jar" | sha256sum -c -; \
     else \
@@ -134,12 +178,14 @@ COPY . .
 # `gradle wrapper`).
 RUN --mount=type=cache,target=/root/.gradle \
     set -eux; \
-    wget -q -O /tmp/gradle.zip \
+    curl -sS -L -o /tmp/gradle.zip -w 'gradle distribution: HTTP %{http_code}\n' \
+        --connect-timeout 20 --max-time 600 \
+        --retry 3 --retry-delay 5 --retry-all-errors --retry-connrefused \
         "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"; \
     mkdir -p /opt/gradle; \
     unzip -q -d /opt/gradle /tmp/gradle.zip; \
     ln -sfn "/opt/gradle/gradle-${GRADLE_VERSION}" /opt/gradle/latest; \
-    gradle --no-daemon --console=plain \
+    gradle --no-daemon --console=plain --stacktrace \
         -PhmsHome="${HMS_HOME}" \
         -PccSdkJar="${CC_SDK_JAR}" \
         -PrunnerVersion="${RUNNER_VERSION}" \

@@ -4,7 +4,6 @@
 # Tags published for release v1.2.3:
 #
 #   hms-runner:1.2.3-hms4.13   hms-runner:hms4.13   hms-runner:latest
-#   hms-runner:1.2.3-hms4.14   hms-runner:hms4.14
 #
 # linux/amd64 only: the HEC-HMS artifact is linux64.
 #
@@ -14,11 +13,27 @@
 # definition; `latest` and `hms<version>` both move, and `latest` follows
 # whichever entry is `default: true`.
 #
+# Deliberately absent, and why (CI cannot work this out on its own):
+#
+#   4.14         TURNED OFF 2026-11-26. `4.14-linux64` exists in Nexus and the
+#                download succeeds; the plugin then fails to COMPILE against it
+#                (run 45734328618, hms 4.14 leg, gradle exit 1). Commented out in
+#                the matrix below - fix the compile errors first, then dry_run it.
+#   4.12         compiles, builds and starts green, but HEC-HMS 4.12 has no
+#                excess-precipitation export action, so the image cannot serve
+#                the real workloads. A leg that passes and is wrong is worse
+#                than no leg -- do not re-add this until that export is proven.
+#   4.13-beta.6  superseded by the 4.13 release; it was only ever the default
+#                baked into Dockerfile.prod, and nothing published is pinned to it.
+#   4.15-beta.2  HEC publishes no linux64 build of it (macOS and win-x64 only).
+#   4.15-beta.1  has a linux64 build; add `- hms: "4.15-beta.1"` when wanted, then
+#                run it once with dry_run before trusting the answer.
+#
 # Testing a version without publishing anything: run the workflow_dispatch with
 # dry_run ticked, or locally:
 #
-#   docker build -f Dockerfile.prod --build-arg HMS_VERSION=4.14 \
-#     --build-arg CC_SDK_SHA256="$CC_SDK_SHA256" -t hms-runner:local-4.14 .
+#   docker build -f Dockerfile.prod --build-arg HMS_VERSION=4.13 \
+#     --build-arg CC_SDK_SHA256="$CC_SDK_SHA256" -t hms-runner:local-4.13 .
 name: Build & Publish (Dockerfile.prod to GHCR)
 
 on:
@@ -54,7 +69,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
-      # A broken 4.14 must not hide a good 4.13.
+      # Every leg pulls ~1 GB from HEC Nexus. If the download step starts failing
+      # with HTTP 429/5xx, uncomment this so the legs stop sharing one GitHub
+      # source IP at the same moment.
+      # max-parallel: 1
+      # A broken leg must not hide a good one.
       fail-fast: false
       matrix:
         include:
@@ -62,8 +81,12 @@ jobs:
           # would silently become "4.1" in the tag and in the tarball URL.
           - hms: "4.13"
             default: true
-          - hms: "4.14"
-            default: false
+          # 4.14 turned off 2026-11-26: hec-hms-4.14-linux64.tar.gz downloads
+          # fine, then gradle fails to compile the plugin against it. Uncomment
+          # these two lines once those compile errors are fixed, and dry_run it
+          # before cutting a release.
+          # - hms: "4.14"
+          #   default: false
 
     steps:
       - uses: actions/checkout@v4
