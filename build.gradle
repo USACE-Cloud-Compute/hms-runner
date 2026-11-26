@@ -1,4 +1,6 @@
-//The Gradle JVM needs to be Java 1.8. It'll build with anything, but you're gonna run into runtime errors "Java lang no method found" if you dont.
+// Needs a Java 17 Gradle JVM: the jar targets Java 17 (see jar below) and
+// HEC-HMS 4.13+ is built for it. The note here used to say 1.8, which predates
+// the 17 target.
 plugins {
     id 'java-library'
 }
@@ -6,57 +8,81 @@ plugins {
 // ---------------------------------------------------------------------------
 // Build-time locations.
 //
-// These used to be hard-coded to /HEC-HMS-4.13-beta.6 and
-// /workspaces/hms-runner/deps, which meant (a) no other HEC-HMS version could
-// ever be compiled and (b) any checkout that was not at the devcontainer path
-// failed. Each one is now a property whose default is the old hard-coded value,
-// so the devcontainer workflow is unchanged:
+// HEC-HMS:  -PhmsHome=<dir>, or HMS_HOME.  Default /hms.
+//   /hms is where Dockerfile_13_6 installs HEC-HMS and what .vscode/launch.json
+//   points java.library.path, GDAL_DATA and PROJ_LIB at, so a plain
+//   `gradle build` and an F5 debug session agree on one path. Dockerfile.prod
+//   passes its own -PhmsHome, so its HMS_HOME=/opt/hms is unaffected by this
+//   default.
 //
-//   gradle build -PhmsHome=/opt/hms -PccSdkJar=/workspaces/deps/cc-java-sdk-all.jar
-//   HMS_HOME=/opt/hms CC_SDK_JAR=/workspaces/deps/cc-java-sdk-all.jar gradle build
+// cc-java-sdk:  resolved from the GitHub release by default --
+//   https://github.com/USACE-Cloud-Compute/cc-java-sdk/releases
+//   usace.cc:cc-java-sdk:1.1.2  ->  v1.1.2/cc-java-sdk-1.1.2-all.jar
+//   (92,449,732 bytes; sha256 a245a7cd...e3840cd0, which GitHub publishes as a
+//    digest on the release asset -- the workflow's empty CC_SDK_SHA256 can be
+//    filled in straight from the release page)
+//   The fat jar is a git-ignored binary, so the previous default -- a
+//   hand-dropped deps/cc-java-sdk-1.1.2-all.jar -- could not resolve on a clean
+//   checkout. -PccSdkVersion picks a different release tag.
 //
-// Environment fallbacks are honoured because the CI/Docker builder image exports
-// HMS_HOME and CC_SDK_JAR.
+//   -PccSdkJar=<file> (or CC_SDK_JAR) still wins and is checked for existence,
+//   for offline builds, an internal mirror, or an unreleased branch build. That
+//   is what Dockerfile.prod and build-push-ghcr.yml pass, so a published image
+//   never contacts GitHub from the Gradle daemon.
 // ---------------------------------------------------------------------------
-def hmsHome = (project.findProperty('hmsHome')
-        ?: System.getenv('HMS_HOME')
-        ?: '/HEC-HMS-4.13-beta.6').toString()
-
-def ccSdkJar = (project.findProperty('ccSdkJar')
-        ?: System.getenv('CC_SDK_JAR')
-        ?: '/workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar').toString()
-
+def hmsHome = (project.findProperty('hmsHome') ?: System.getenv('HMS_HOME') ?: '/hms').toString()
+def ccSdkJar = (project.findProperty('ccSdkJar') ?: System.getenv('CC_SDK_JAR') ?: '').toString().trim()
+def ccSdkVersion = (project.findProperty('ccSdkVersion') ?: System.getenv('CC_SDK_VERSION') ?: '1.1.2').toString()
 // Image builds stamp the release tag in here; the runtime launcher locates the
 // jar by glob, so the name is free to change.
-def runnerVersion = (project.findProperty('runnerVersion')
-        ?: System.getenv('RUNNER_VERSION')
-        ?: '0.0.1').toString()
+def runnerVersion = (project.findProperty('runnerVersion') ?: System.getenv('RUNNER_VERSION') ?: '0.0.1').toString()
 
 // Fail with a readable message instead of a wall of "package mil.army.usace.hec
 // does not exist" errors when the paths are wrong.
 if (!file("${hmsHome}/hms.jar").exists()) {
-    throw new GradleException("HEC-HMS not found: '${hmsHome}/hms.jar' does not exist. " +
-            "Pass -PhmsHome=/path/to/HEC-HMS-<version> or set HMS_HOME.")
+    throw new GradleException("HEC-HMS not found: ${hmsHome}/hms.jar does not exist. " +
+            "Pass -PhmsHome=/path/to/hms or set HMS_HOME (default /hms, where " +
+            "Dockerfile_13_6 installs it).")
 }
-if (!file(ccSdkJar).exists()) {
-    throw new GradleException("cc-java-sdk not found: '${ccSdkJar}' does not exist. " +
-            "Pass -PccSdkJar=/path/to/cc-java-sdk-<ver>-all.jar or set CC_SDK_JAR " +
-            "(see Dockerfile.prod for where CI puts it).")
+
+// Empty means "resolve it from the release" via the ivy repository below.
+def ccSdkFromLocalJar = !ccSdkJar.isEmpty()
+if (ccSdkFromLocalJar && !file(ccSdkJar).exists()) {
+    throw new GradleException("cc-java-sdk not found: ${ccSdkJar} does not exist. " +
+            "Fix -PccSdkJar / CC_SDK_JAR, or clear it to resolve cc-java-sdk " +
+            "${ccSdkVersion} from the GitHub release.")
 }
+
+def ccSdkDependency = ccSdkFromLocalJar ? files(ccSdkJar) : "usace.cc:cc-java-sdk:${ccSdkVersion}"
+
+println 'hms-runner build: HEC-HMS ' + hmsHome + ', cc-java-sdk ' +
+        (ccSdkFromLocalJar ? 'local jar ' + ccSdkJar : 'usace.cc:cc-java-sdk:' + ccSdkVersion + ' from the GitHub release')
 
 //Dependency Management
 repositories {
     mavenCentral()
-    //maven{
-    // name = "GitHubPackages"
-    //// The url of the repository that contains the published artifacts
-    //url = "https://maven.pkg.github.com/USACE/cc-java-sdk"
-    //credentials {
-    // username = project.findProperty("gpr.user") ?: System.getenv("USERNAME")
-    // password = project.findProperty("gpr.key") ?: System.getenv("TOKEN")
-    //}
-    //}
     maven { url "https://www.hec.usace.army.mil/nexus/repository/maven-public/" }
+    if (!ccSdkFromLocalJar) {
+        // Release assets are plain files with no POM, so the download URL is
+        // spelled out as an Ivy pattern:
+        //   {url}/v{version}/cc-java-sdk-{version}-all.jar
+        // metadataSources { artifact() } says the artifact IS the module --
+        // right for an -all fat jar, which already carries its dependencies, so
+        // there is nothing transitive left to describe.
+        ivy {
+            name = 'ccJavaSdkReleases'
+            url = 'https://github.com/USACE-Cloud-Compute/cc-java-sdk/releases/download'
+            patternLayout {
+                artifact 'v[revision]/[module]-[revision]-all.[ext]'
+            }
+            metadataSources {
+                artifact()
+            }
+            content {
+                includeGroup 'usace.cc'
+            }
+        }
+    }
 }
 
 configurations {
@@ -65,23 +91,29 @@ configurations {
 
 dependencies {
     implementation files("${hmsHome}/hms.jar")
-    implementation files(ccSdkJar)
+    implementation ccSdkDependency
     implementation fileTree(dir: "${hmsHome}/lib", include: '*.jar')
-    //implementation 'mil.army.usace.hec:cc-java-sdk:0.0.59'
 
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.1'
     testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.7.1'
     testImplementation files("${hmsHome}/hms.jar")
     testImplementation fileTree(dir: "${hmsHome}/lib", include: '*.jar')
-    testImplementation files(ccSdkJar)
-    //testImplementation 'mil.army.usace.hec:cc-java-sdk:0.0.59'
+    testImplementation ccSdkDependency
+}
+// HEC-HMS 4.13 is Java 17 bytecode, 4.14 is Java 21 (class file 65.0). The
+// Gradle JVM must be at least as new as the HMS classes being linked, so a
+// 4.14 build needs -PjavaCompat=21 on a temurin:21-jdk builder.
+def javaCompat = JavaVersion.toVersion(
+    (project.findProperty('javaCompat') ?: System.getenv('JAVA_COMPAT') ?: '17').toString())
+
+java {
+    sourceCompatibility = javaCompat
+    targetCompatibility = javaCompat
 }
 
 jar {
     zip64 = true
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
     from {
         configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
     }
@@ -98,8 +130,7 @@ test {
 }
 
 tasks.withType(Test) {
-    systemProperty "java.library.path",
-            "${hmsHome}/bin/gdal:${hmsHome}/bin:${hmsHome}/bin/taudem:${hmsHome}/bin/mpi:${hmsHome}/jre/bin:${hmsHome}/jre/lib"
+    systemProperty "java.library.path", "${hmsHome}/bin/gdal:${hmsHome}/bin:${hmsHome}/bin/taudem:${hmsHome}/bin/mpi:${hmsHome}/jre/bin:${hmsHome}/jre/lib"
 }
 
 group 'mil.army.usace.hec'

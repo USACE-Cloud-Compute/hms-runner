@@ -1,0 +1,50 @@
+# Development container for VS Code Remote-Containers (.devcontainer/devcontainer.json).
+# Dockerfile_13_6 for the HEC-HMS 4.14 release: the only difference is the
+# version in the tarball URL. Dev only -- published images are built by
+# Dockerfile.prod.
+FROM eclipse-temurin:21-jdk AS dev
+
+ENV TZ=America/New_York
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GRADLE_HOME=/opt/gradle/latest
+ENV PATH=${GRADLE_HOME}/bin:$PATH
+
+# Where HEC-HMS is installed. build.gradle defaults hmsHome to this same path and
+# .vscode/launch.json points java.library.path, GDAL_DATA and PROJ_LIB at it, so
+# a bare `gradle build` and an F5 debug session agree. Dockerfile.prod installs
+# to /opt/hms and passes -PhmsHome, so it is independent of this.
+ENV HMS_HOME=/hms
+
+#need to get the jdk.
+# One install call, no repeated packages. The tarball and the zip are deleted in
+# the layer that fetched them -- keeping /hec-hms.tar.gz around cost about 1 GB
+# of image size -- and --strip-components=1 is what lets HMS_HOME be /hms rather
+# than whatever directory HEC named inside the tarball.
+# No cc-java-sdk here on purpose: build.gradle resolves it from the GitHub
+# release, so the container needs no hand-dropped deps/ jar. First `gradle build`
+# does need network to fetch the 92 MB artifact; it is cached in GRADLE_USER_HOME
+# after that.
+RUN apt-get update &&\
+    apt-get install -y --no-install-recommends wget git unzip ca-certificates libxrender1 libxtst6 libxi6 libfreetype6 libgfortran5 libfontconfig1 &&\
+    wget -O /hec-hms.tar.gz https://www.hec.usace.army.mil/nexus/repository/maven-public/mil/army/usace/hec/hec-hms/4.14-linux64/hec-hms-4.14-linux64.tar.gz &&\
+    mkdir -p ${HMS_HOME} &&\
+    tar -xzf /hec-hms.tar.gz -C ${HMS_HOME} --strip-components=1 &&\
+    rm -f /hec-hms.tar.gz &&\
+    wget -O /tmp/gradle.zip https://services.gradle.org/distributions/gradle-9.7.1-bin.zip &&\
+    unzip -q -d /opt/gradle /tmp/gradle.zip &&\
+    ln -s /opt/gradle/gradle-9.7.1 /opt/gradle/latest &&\
+    rm -f /tmp/gradle.zip
+
+# Verification. Fail the image build here instead of at the first gradle run:
+# hms.jar and lib are the compile classpath build.gradle reads, bin/gdal is the
+# first entry of java.library.path in .vscode/launch.json, and the archive is
+# already gone, so this is the last point that can still report a truncated
+# download. Nothing may be installed at a path named for another HEC-HMS release:
+# this container is 4.14, and a stray /HEC-HMS-4.13-beta.6 alias would let a stale
+# path silently resolve.
+RUN test -f ${HMS_HOME}/hms.jar &&\
+    test -d ${HMS_HOME}/lib &&\
+    test -d ${HMS_HOME}/bin/gdal &&\
+    ! ls -d /HEC-HMS-* >/dev/null 2>&1 &&\
+    gradle --version &&\
+    java -version

@@ -1,32 +1,70 @@
-// For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
-// https://github.com/microsoft/vscode-dev-containers/tree/v0.234.0/containers/docker-existing-dockerfile
 {
-	"name": "Existing Dockerfile",
+  // For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
+  // https://github.com/microsoft/vscode-dev-containers/tree/v0.234.0/containers/docker-existing-dockerfile
+  "name": "Dockerfile_14",
 
-	// Sets the run context to one level up instead of the .devcontainer folder.
-	"context": "..",
+  // Sets the run context to one level up instead of the .devcontainer folder.
+  "context": "..",
 
-	// Update the 'dockerFile' property if you aren't using the standard 'Dockerfile' filename.
-	"dockerFile": "../Dockerfile_13_6",
+  // Update the 'dockerFile' property if you aren't using the standard 'Dockerfile' filename.
+  "dockerFile": "../Dockerfile_14",
 
-	// Set *default* container specific settings.json values on container create.
-	"settings": {},
-	
-	// Add the IDs of extensions you want installed when the container is created.
-	"extensions": []
+  // Gradle import needs a JVM that Gradle 7.3.1 can execute on, and that is Java 8-17 only
+  // ("Java 18 and later versions are not yet supported" -- gradle 7.3.1 compatibility matrix).
+  // Without these two keys the Java extension runs the Tooling API on its OWN bundled
+  // runtime -- the log says "Java Home:
+  // /root/.vscode-server/extensions/redhat.java-<ver>/jre/25.0.4.1-linux-x86_64" -- and
+  // Gradle 7.3.1's embedded Groovy 3.0.9 dies reading a Java 25 class file:
+  // "Unsupported class file major version 69". That is an IDE-import failure, not a
+  // build.gradle failure: the init script the extension writes into /tmp never gets to
+  // evaluate this project.
+  //
+  // /opt/java/openjdk is the container's Java 17 (the eclipse-temurin:17-jdk JAVA_HOME,
+  // which Dockerfile_13_6 and Dockerfile_14 both inherit). Confirm with `echo $JAVA_HOME`
+  // in the integrated terminal and use that value if the base image ever changes.
+  //
+  // These live under customizations, NOT the old top-level "settings": {} that was here
+  // before -- current Remote-Containers only reads customizations.vscode.settings, so the
+  // empty legacy key pinned nothing.
+  "customizations": {
+    "vscode": {
+      "settings": {
+        // redhat.java: the JVM used to run the Gradle build / import.
+        "java.import.gradle.java.home": "/opt/java/openjdk",
+        // vscjava.vscode-gradle: the JVM used by its gradle-server daemon.
+        "gradle.javaHome": "/opt/java/openjdk",
+        // Compile and resolve the project as Java 17, matching sourceCompatibility 17 in
+        // build.gradle and the JRE HEC-HMS ships at /hms/jre.
+        "java.configuration.runtimes": [
+          { "name": "JavaSE-17", "path": "/opt/java/openjdk", "default": true }
+        ]
+      },
+      // The README's "inside the container, install java and gradle extensions" step. Left
+      // empty on purpose -- list the IDs here and Remote-Containers installs them on create.
+      "extensions": []
+    }
+  }
 
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
+  // Set *default* container specific settings.json values on container create.
+  // "settings": {},
 
-	// Uncomment the next line to run commands after the container is created - for example installing curl.
-	// "postCreateCommand": "apt-get update && apt-get install -y curl",
+  // Use 'forwardPorts' to make a list of ports inside the container available locally.
+  // "forwardPorts": [],
 
-	// Uncomment when using a ptrace-based debugger like C++, Go, and Rust
-	// "runArgs": [ "--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined" ],
+  // Uncomment the next line to run commands after the container is created - for example installing curl.
+  // "postCreateCommand": "apt-get update && apt-get install -y curl",
 
-	// Uncomment to use the Docker CLI from inside the container. See https://aka.ms/vscode-remote/samples/docker-from-docker.
-	// "mounts": [ "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind" ],
+  // Keep the Gradle caches in a named volume. The log shows this import downloading
+  // gradle-7.3.1-bin.zip into /root/.gradle/wrapper/dists; every container rebuild throws
+  // that away, and so does the 92 MB cc-java-sdk jar build.gradle now resolves.
+  // "mounts": [ "source=hms-runner-gradle-cache,target=/root/.gradle,type=volume" ],
 
-	// Uncomment to connect as a non-root user if you've added one. See https://aka.ms/vscode-remote/containers/non-root.
-	// "remoteUser": "vscode"
+  // Uncomment when using a ptrace-based debugger like C++, Go, and Rust
+  // "runArgs": [ "--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined" ],
+
+  // Uncomment to use the Docker CLI from inside the container. See https://aka.ms/vscode-remote/samples/docker-from-docker.
+  // "mounts": [ "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind" ],
+
+  // Uncomment to connect as a non-root user if you've added one. See https://aka.ms/vscode-remote/containers/non-root.
+  // "remoteUser": "vscode"
 }
