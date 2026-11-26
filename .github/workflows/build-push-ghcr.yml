@@ -108,7 +108,8 @@ jobs:
           set -euo pipefail
           # On a release event this is the tag (v1.2.3 -> 1.2.3); on a dispatch it
           # is the branch name, which is fine because a dry run pushes nothing.
-          version="${GITHUB_REF_NAME#v}"
+          image_version="${GITHUB_REF_NAME}"
+          version="${image_version#v}"
           if [ "${DRY_RUN:-false}" = "true" ]; then
             local_tag="hms-runner:local-${HMS}"
             {
@@ -122,17 +123,17 @@ jobs:
           else
             {
               echo "version=${version}"
-              echo "primary=${IMAGE}:${version}-hms${HMS}"
+              echo "primary=${IMAGE}:${image_version}-hms${HMS}"
               echo "tags<<TAGS"
-              echo "${IMAGE}:${version}-hms${HMS}"
+              echo "${IMAGE}:${image_version}-hms${HMS}"
               echo "${IMAGE}:hms${HMS}"
               if [ "${IS_DEFAULT}" = "true" ]; then
                 echo "${IMAGE}:latest"
               fi
               echo "TAGS"
             } >> "$GITHUB_OUTPUT"
-            echo "tags for ${version} / HEC-HMS ${HMS}:"
-            printf '  %s\n' "${IMAGE}:${version}-hms${HMS}" "${IMAGE}:hms${HMS}"
+            echo "tags for ${image_version} / HEC-HMS ${HMS}:"
+            printf '  %s\n' "${IMAGE}:${image_version}-hms${HMS}" "${IMAGE}:hms${HMS}"
           fi
 
       - uses: docker/setup-buildx-action@v3
@@ -158,6 +159,7 @@ jobs:
           build-args: |
             HMS_VERSION=${{ matrix.hms }}
             HMS_TARBALL_URL=${{ matrix.tarballUrl }}
+            RUNTIME_BASE_IMAGE=${{ matrix.runtimeBaseImage }}
             RUNNER_VERSION=${{ steps.tags.outputs.version }}
             CC_SDK_VERSION=${{ env.CC_SDK_VERSION }}
             CC_SDK_SHA256=${{ env.CC_SDK_SHA256 }}
@@ -165,6 +167,7 @@ jobs:
             org.opencontainers.image.title=HEC-HMS Runner
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.image_version }}
           # Scope the cache per HEC-HMS version: the ~1 GB tarball layer is what
           # makes a leg slow, and an unscoped cache lets matrix legs evict each
           # other out of it.
