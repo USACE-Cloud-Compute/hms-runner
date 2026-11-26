@@ -229,6 +229,21 @@ jobs:
           provenance: false
           sbom: false
 
+# Corrected "Smoke test" step for .github/workflows/build-push-ghcr.yml.
+# Replace the existing step with this block (matrix keys, tags and build step are
+# unchanged). Root cause of run 45899188781: `java -version` prints
+#   Picked up JAVA_TOOL_OPTIONS: -Djava.library.path=...
+# to stderr BEFORE the version line, so the previous `head -n 1 | grep -Eq
+# "\"17[.\"]"` could never match. Both images were correct (Java 21.0.13.1 on
+# ubuntu:24.04, Java 17.0.15 on ubuntu:20.04); the assertion was wrong, and it
+# failed both legs identically. Three defects fixed:
+#   1. parse the quoted version from the line that carries it
+#   2. readlink -f on BOTH sides of the ENTRYPOINT symlink comparison --
+#      /usr/lib/jvm/java-<n>-openjdk-amd64 is itself a symlink on Debian/Ubuntu
+#   3. read java.library.path out of -XshowSettings and match by :dir: containment
+#      instead of splitting all of stderr on ':' (the banner yields fake segments),
+#      and accept ANY directory holding libjavaHeclib (4.13: bin/, 4.14:
+#      bin/javaHeclib/) instead of the first sorted one
       - name: Smoke test
         env:
           IMAGE_REF: ${{ steps.tags.outputs.primary }}
@@ -247,60 +262,60 @@ jobs:
             ref="${IMAGE_REF}"
           fi
 
-          # 1. Layout, and the toolchain the image CLAIMS vs the one it RUNS. The JRE
-          #    path used to be a literal java-17 here, so an image shipping 21 bytecode
-          #    on a 17 JRE could still pass: the check was asserting another leg.
+          # 1. Layout, and the toolchain the image CLAIMS vs the one it RUNS.
+          #    RUNTIME_JAVA must be passed in with -e: it is a workflow variable,
+          #    not an image ENV, and inside the single-quoted block below the
+          #    container shell is the only thing expanding it.
           docker run --rm -e RUNTIME_JAVA --entrypoint sh "$ref" -c '
             set -eu
+            fail() { echo "FAIL: $*" >&2; exit 1; }
             JRE=/usr/lib/jvm/java-"${RUNTIME_JAVA}"-openjdk-amd64/bin/java
-            test -x "$JRE" || { echo "FAIL: $JRE missing (apt JRE gone? wrong runtimeJava?)"; exit 1; }
-            "$JRE" -version 2>&1 | head -n 1 | grep -Eq "\"${RUNTIME_JAVA}[.\"]" \
-              || { echo "FAIL: $JRE is not Java ${RUNTIME_JAVA}"; "$JRE" -version; exit 1; }
-            # The ENTRYPOINT cannot name a version-specific path (Docker does not expand
-            # ${VAR} in an exec-form array), so the image publishes one stable name for
-            # whatever apt JRE this leg installed.
+            test -x "$JRE" || fail "$JRE missing (apt JRE gone? wrong runtimeJava?)"
+            # Take the line that carries the quoted version: the JAVA_TOOL_OPTIONS
+            # banner is printed to stderr first, so head -n 1 is never the version.
+            line="$("$JRE" -version 2>&1 | grep -m1 "version \"")" \
+              || fail "$JRE printed no version line"
+            ver=${line#*\"}; ver=${ver%%\"*}
+            [ "${ver%%.*}" = "${RUNTIME_JAVA}" ] \
+              || fail "$JRE is Java ${ver:-?}, expected ${RUNTIME_JAVA}"
+            echo "runtime JRE: $JRE (Java $ver)"
+            # Canonicalise both sides -- the jvm directory is itself a symlink.
             test -x /usr/local/bin/hms-runner-java \
-              || { echo "FAIL: /usr/local/bin/hms-runner-java missing"; exit 1; }
-            [ "$(readlink -f /usr/local/bin/hms-runner-java)" = "$JRE" ] \
-              || { echo "FAIL: hms-runner-java does not resolve to $JRE"; exit 1; }
-            test -f /hms/hms-runner.jar || { echo "FAIL: /hms/hms-runner.jar absent"; ls -l /hms; exit 1; }
-            test -f "${HMS_HOME}/hms.jar" || { echo "FAIL: ${HMS_HOME}/hms.jar absent"; exit 1; }
-            test -d "${HMS_HOME}/bin/gdal" || { echo "FAIL: ${HMS_HOME}/bin/gdal missing"; exit 1; }
-            # The native Project.open needs. 4.13 keeps it in bin/, 4.14 moved it to
-            # bin/javaHeclib/, so search rather than assume either.
-            hecdir="$(find "${HMS_HOME}" -name "libjavaHeclib*" -printf "%h\n" 2>/dev/null | sort -u | head -n 1)"
-            test -n "${hecdir}" || { echo "FAIL: no libjavaHeclib.so under ${HMS_HOME}"; exit 1; }
-            echo "libjavaHeclib: ${hecdir}"
-            # ...and it must be on the path the JVM was actually given, or the run dies
-            # later with UnsatisfiedLinkError. This is the check 4.14 needed.
-            "$JRE" -XshowSettings:properties -version 2>&1 | tr ":" "\n" | grep -qx "${hecdir}" \
-              || { echo "FAIL: java.library.path does not contain ${hecdir}"; exit 1; }
-            "$JRE" -XshowSettings:properties -version 2>&1 | grep -q "${HMS_HOME}/bin/gdal" \
-              || { echo "FAIL: java.library.path did not reach the JVM"; exit 1; }
+              || fail "/usr/local/bin/hms-runner-java missing (Dockerfile.prod symlink step not applied)"
+            [ "$(readlink -f /usr/local/bin/hms-runner-java)" = "$(readlink -f "$JRE")" ] \
+              || fail "hms-runner-java resolves to $(readlink -f /usr/local/bin/hms-runner-java), not $(readlink -f "$JRE")"
+            test -f /hms/hms-runner.jar || { ls -l /hms; fail "/hms/hms-runner.jar absent"; }
+            test -f "${HMS_HOME}/hms.jar" || fail "${HMS_HOME}/hms.jar absent"
+            test -d "${HMS_HOME}/bin/gdal" || fail "${HMS_HOME}/bin/gdal missing"
+            hecdirs="$(find "${HMS_HOME}" -name "libjavaHeclib*" -printf "%h\n" 2>/dev/null | sort -u)"
+            [ -n "${hecdirs}" ] || fail "no libjavaHeclib.so under ${HMS_HOME}"
+            echo "libjavaHeclib found in: $(echo ${hecdirs} | tr "\n" " ")"
+            lp="$("$JRE" -XshowSettings:properties -version 2>&1 | sed -n "s/^ *java\\.library\\.path = //p" | head -n 1)"
+            [ -n "${lp}" ] || fail "could not read java.library.path from the JVM"
+            hit=0
+            for d in ${hecdirs}; do
+              if printf "%s" ":${lp}:" | grep -q ":${d}:"; then hit=1; echo "  on java.library.path: ${d}"; else echo "  not on path: ${d}"; fi
+            done
+            [ "${hit}" = 1 ] || fail "no directory holding libjavaHeclib is on java.library.path (${lp})"
             # Wrong PROJ/GDAL paths do not fail a run, they degrade it silently.
-            test -n "${PROJ_LIB:-}" || { echo "FAIL: PROJ_LIB not set in the image"; exit 1; }
-            test -f "${PROJ_LIB}/proj.db" || { echo "FAIL: ${PROJ_LIB}/proj.db missing"; exit 1; }
-            test -n "${GDAL_DATA:-}" || { echo "FAIL: GDAL_DATA not set in the image"; exit 1; }
-            test -d "${GDAL_DATA}" || { echo "FAIL: ${GDAL_DATA} missing"; exit 1; }
-            # Bytecode of the shipped jar vs the JRE that has to load it. Best-effort:
-            # it needs unzip, which a minimal runtime image may not carry. Step 2 is the
-            # hard gate -- a 21-bytecode jar on a 17 JRE dies there with
-            # UnsupportedClassVersionError -- so skip rather than fail when unzip is
-            # absent, and never let a missing debug tool fail a good leg.
+            [ -n "${PROJ_LIB:-}" ] || fail "PROJ_LIB not set in the image"
+            test -f "${PROJ_LIB}/proj.db" || fail "${PROJ_LIB}/proj.db missing"
+            [ -n "${GDAL_DATA:-}" ] || fail "GDAL_DATA not set in the image"
+            test -d "${GDAL_DATA}" || fail "${GDAL_DATA} missing"
+            # Best effort: needs unzip, which a minimal runtime image may not carry.
+            # Step 2 is the hard gate -- 21 bytecode on a 17 JRE dies there with
+            # UnsupportedClassVersionError.
             if command -v unzip >/dev/null 2>&1; then
-              major="$(unzip -p /hms/hms-runner.jar usace/cc/plugin/hmsrunner/HmsRunner.class \
-                       | od -An -tu1 -j7 -N1 | tr -d " ")"
-              echo "hms-runner.jar bytecode major: ${major}"
+              major="$(unzip -p /hms/hms-runner.jar usace/cc/plugin/hmsrunner/HmsRunner.class | od -An -tu1 -j7 -N1 | tr -d " ")"
+              echo "runner bytecode major: ${major}"
               [ "${major}" -le $((44 + RUNTIME_JAVA)) ] \
-                || { echo "FAIL: jar is bytecode ${major} but the runtime JRE is ${RUNTIME_JAVA}"; exit 1; }
+                || fail "jar is bytecode ${major} but the runtime JRE is ${RUNTIME_JAVA}"
             else
-              echo "NOTE: no unzip in the image; skipping the bytecode check (step 2 catches it)"
+              echo "NOTE: no unzip in the image; skipping the bytecode check"
             fi
-            echo "layout OK: ${HMS_HOME}, runtime Java ${RUNTIME_JAVA}"'
+            echo "layout OK: ${HMS_HOME}, runtime Java ${ver}"'
 
-          # 2. Start with no payload: must fail for a RUNTIME reason. A link or
-          #    class-load failure means this HEC-HMS version does not agree with what
-          #    the plugin was compiled against.
+          # 2. Start with no payload: must fail for a RUNTIME reason.
           set +e
           out="$(docker run --rm "${ref}" 2>&1)"
           rc=$?
@@ -308,16 +323,15 @@ jobs:
           printf '%s\n' "${out}" | tail -n 15
           printf '%s' "${out}" | grep -q 'Picked up JAVA_TOOL_OPTIONS' \
             || { echo "FAIL: JAVA_TOOL_OPTIONS was not applied"; exit 1; }
-          if printf '%s' "${out}" | grep -Eq 'UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException'; then
+          if printf '%s' "${out}" | grep -Eq 'UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException|UnsupportedClassVersionError'; then
             echo "FAIL: HEC-HMS ${HMS} did not load: ${out}" | tail -n 30
             exit 1
           fi
           echo "start check OK for HEC-HMS ${HMS} (exit ${rc}, no linking errors)"
 
-          # 3. Run the committed Muncie model end to end. This is what separates a
-          #    building image from a working one: it loads libjavaHeclib, opens a DSS,
-          #    reads GDAL/PROJ-backed data and writes the result back through the store.
-          #    Every 4.14 surprise in this repo outlived the two checks above.
+          # 3. Run the committed Muncie model end to end: loads libjavaHeclib, opens
+          #    a DSS, reads GDAL/PROJ-backed data and writes the result back through
+          #    the store. Every 4.14 surprise in this repo outlived checks 1 and 2.
           set +e
           out3="$(docker run --rm \
             --env-file testdata/muncie/.env-mnt \
