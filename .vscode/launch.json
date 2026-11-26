@@ -1,6 +1,11 @@
 // Use IntelliSense to learn about possible attributes.
 // Hover to view descriptions of existing attributes.
 // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+//
+// The java.library.path below includes /hms/bin/javaHeclib: HEC-HMS 4.14 moved
+// libjavaHeclib.so out of /hms/bin, and without that entry Project.open dies with
+// "no javaHeclib in java.library.path". Keep it in step with build.gradle
+// (tasks.withType(Test)) and Dockerfile.prod (JAVA_TOOL_OPTIONS).
 {
   "version": "0.2.0",
   "configurations": [
@@ -34,7 +39,7 @@
       "name": "Launch Current File",
       "request": "launch",
       "mainClass": "${file}",
-      "vmArgs": "-Djava.library.path=/hms/bin/gdal:/hms/bin:/hms/bin/taudem:/hms/bin/mpi:/hms/jre/bin:/hms/jre/lib/",
+      "vmArgs": "-Djava.library.path=/hms/bin/gdal:/hms/bin:/hms/bin/javaHeclib:/hms/bin/taudem:/hms/bin/mpi:/hms/jre/bin:/hms/jre/lib/",
       "args": "",
       "env": {
         "GDAL_DATA": "/hms/bin/gdal/gdal-data",
@@ -65,7 +70,7 @@
       "name": "compute-all-placements",
       "request": "launch",
       "mainClass": "${file}",
-      "vmArgs": "-Djava.library.path=/hms/bin/gdal:/hms/bin:/hms/bin/taudem:/hms/bin/mpi:/hms/jre/bin:/hms/jre/lib/",
+      "vmArgs": "-Djava.library.path=/hms/bin/gdal:/hms/bin:/hms/bin/javaHeclib:/hms/bin/taudem:/hms/bin/mpi:/hms/jre/bin:/hms/jre/lib/",
       "args": "",
       "envFile": "/workspaces/.env-all-placements"
     },
@@ -74,7 +79,7 @@
       "name": "prep-hdf-files",
       "request": "launch",
       "mainClass": "${file}",
-      "vmArgs": "-Djava.library.path=/hms/bin/gdal:/hms/bin:/hms/bin/taudem:/hms/bin/mpi:/hms/jre/bin:/hms/jre/lib/",
+      "vmArgs": "-Djava.library.path=/hms/bin/gdal:/hms/bin:/hms/bin/javaHeclib:/hms/bin/taudem:/hms/bin/mpi:/hms/jre/bin:/hms/jre/lib/",
       "args": "",
       "envFile": "/workspaces/.env-lavon-prep"
     },
@@ -82,8 +87,8 @@
       "type": "java",
       "name": "compute-muncie",
       "request": "launch",
-      "mainClass": "${file}",
-      "vmArgs": "-Djava.library.path=/hms/bin/gdal:/hms/bin:/hms/bin/taudem:/hms/bin/mpi:/hms/jre/bin:/hms/jre/lib/",
+      "mainClass": "/workspaces/hms-runner/src/main/java/usace/cc/plugin/hmsrunner/HmsRunner.java",
+      "vmArgs": "-Djava.library.path=/hms/bin/gdal:/hms/bin:/hms/bin/javaHeclib:/hms/bin/taudem:/hms/bin/mpi:/hms/jre/bin:/hms/jre/lib/",
       "args": "",
       "envFile": "/workspaces/hms-runner/testdata/muncie/.env"
     }
