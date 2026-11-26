@@ -1,24 +1,62 @@
 //The Gradle JVM needs to be Java 1.8. It'll build with anything, but you're gonna run into runtime errors "Java lang no method found" if you dont.
-
 plugins {
     id 'java-library'
+}
+
+// ---------------------------------------------------------------------------
+// Build-time locations.
+//
+// These used to be hard-coded to /HEC-HMS-4.13-beta.6 and
+// /workspaces/hms-runner/deps, which meant (a) no other HEC-HMS version could
+// ever be compiled and (b) any checkout that was not at the devcontainer path
+// failed. Each one is now a property whose default is the old hard-coded value,
+// so the devcontainer workflow is unchanged:
+//
+//   gradle build -PhmsHome=/opt/hms -PccSdkJar=/workspaces/deps/cc-java-sdk-all.jar
+//   HMS_HOME=/opt/hms CC_SDK_JAR=/workspaces/deps/cc-java-sdk-all.jar gradle build
+//
+// Environment fallbacks are honoured because the CI/Docker builder image exports
+// HMS_HOME and CC_SDK_JAR.
+// ---------------------------------------------------------------------------
+def hmsHome = (project.findProperty('hmsHome')
+        ?: System.getenv('HMS_HOME')
+        ?: '/HEC-HMS-4.13-beta.6').toString()
+
+def ccSdkJar = (project.findProperty('ccSdkJar')
+        ?: System.getenv('CC_SDK_JAR')
+        ?: '/workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar').toString()
+
+// Image builds stamp the release tag in here; the runtime launcher locates the
+// jar by glob, so the name is free to change.
+def runnerVersion = (project.findProperty('runnerVersion')
+        ?: System.getenv('RUNNER_VERSION')
+        ?: '0.0.1').toString()
+
+// Fail with a readable message instead of a wall of "package mil.army.usace.hec
+// does not exist" errors when the paths are wrong.
+if (!file("${hmsHome}/hms.jar").exists()) {
+    throw new GradleException("HEC-HMS not found: '${hmsHome}/hms.jar' does not exist. " +
+            "Pass -PhmsHome=/path/to/HEC-HMS-<version> or set HMS_HOME.")
+}
+if (!file(ccSdkJar).exists()) {
+    throw new GradleException("cc-java-sdk not found: '${ccSdkJar}' does not exist. " +
+            "Pass -PccSdkJar=/path/to/cc-java-sdk-<ver>-all.jar or set CC_SDK_JAR " +
+            "(see Dockerfile.prod for where CI puts it).")
 }
 
 //Dependency Management
 repositories {
     mavenCentral()
     //maven{
-       // name = "GitHubPackages"
-        //// The url of the repository that contains the published artifacts
-        //url = "https://maven.pkg.github.com/USACE/cc-java-sdk"
-        //credentials {
-        //    username = project.findProperty("gpr.user") ?: System.getenv("USERNAME")
-        //    password = project.findProperty("gpr.key") ?: System.getenv("TOKEN")
-        //}
+    // name = "GitHubPackages"
+    //// The url of the repository that contains the published artifacts
+    //url = "https://maven.pkg.github.com/USACE/cc-java-sdk"
+    //credentials {
+    // username = project.findProperty("gpr.user") ?: System.getenv("USERNAME")
+    // password = project.findProperty("gpr.key") ?: System.getenv("TOKEN")
     //}
-    maven {
-        url "https://www.hec.usace.army.mil/nexus/repository/maven-public/"
-    }
+    //}
+    maven { url "https://www.hec.usace.army.mil/nexus/repository/maven-public/" }
 }
 
 configurations {
@@ -26,15 +64,16 @@ configurations {
 }
 
 dependencies {
-    implementation files('/HEC-HMS-4.13-beta.6/hms.jar')
-    implementation files('/workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar')
-    implementation fileTree(dir: '/HEC-HMS-4.13-beta.6/lib', include: '*.jar')
+    implementation files("${hmsHome}/hms.jar")
+    implementation files(ccSdkJar)
+    implementation fileTree(dir: "${hmsHome}/lib", include: '*.jar')
     //implementation 'mil.army.usace.hec:cc-java-sdk:0.0.59'
+
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.1'
     testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.7.1'
-    testImplementation files('/HEC-HMS-4.13-beta.6/hms.jar')
-    testImplementation fileTree(dir: '/HEC-HMS-4.13-beta.6/lib', include: '*.jar')
-    testImplementation files('/workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar')
+    testImplementation files("${hmsHome}/hms.jar")
+    testImplementation fileTree(dir: "${hmsHome}/lib", include: '*.jar')
+    testImplementation files(ccSdkJar)
     //testImplementation 'mil.army.usace.hec:cc-java-sdk:0.0.59'
 }
 
@@ -43,27 +82,25 @@ jar {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
-    
     from {
-        configurations.runtimeClasspath.collect{it.isDirectory() ? it : zipTree(it)}
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
     }
-    
     exclude 'META-INF/*.RSA'
     exclude 'META-INF/*.SF'
     exclude 'META-INF/*.DSA'
-
     manifest {
         attributes "Main-Class": "usace.cc.plugin.hmsrunner.HmsRunner"
     }
 }
 
-test{
+test {
     useJUnitPlatform()
 }
 
 tasks.withType(Test) {
-    systemProperty "java.library.path", "/HEC-HMS-4.13-beta.6/bin/gdal:/HEC-HMS-4.13-beta.6/bin:/HEC-HMS-4.13-beta.6/bin/taudem:/HEC-HMS-4.13-beta.6/bin/mpi:/HEC-HMS-4.13-beta.6/jre/bin:/HEC-HMS-4.13-beta.6/jre/lib"
+    systemProperty "java.library.path",
+            "${hmsHome}/bin/gdal:${hmsHome}/bin:${hmsHome}/bin/taudem:${hmsHome}/bin/mpi:${hmsHome}/jre/bin:${hmsHome}/jre/lib"
 }
 
 group 'mil.army.usace.hec'
-version '0.0.1'
+version runnerVersion

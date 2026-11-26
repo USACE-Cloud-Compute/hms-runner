@@ -1,0 +1,193 @@
+# Builds Dockerfile.prod for every supported HEC-HMS version and pushes the
+# images to GHCR when a release is published.
+#
+# Tags published for release v1.2.3:
+#
+#   hms-runner:1.2.3-hms4.13   hms-runner:hms4.13   hms-runner:latest
+#   hms-runner:1.2.3-hms4.14   hms-runner:hms4.14
+#
+# linux/amd64 only: the HEC-HMS artifact is linux64.
+#
+# SUPPORTED HEC-HMS VERSIONS -- the `matrix.include` list below is the whole
+# policy (always quote the version, see the note there). Pin the immutable
+# `<runner version>-hms<hms version>` tag in any compute manifest or plugin
+# definition; `latest` and `hms<version>` both move, and `latest` follows
+# whichever entry is `default: true`.
+#
+# Testing a version without publishing anything: run the workflow_dispatch with
+# dry_run ticked, or locally:
+#
+#   docker build -f Dockerfile.prod --build-arg HMS_VERSION=4.14 \
+#     --build-arg CC_SDK_SHA256="$CC_SDK_SHA256" -t hms-runner:local-4.14 .
+name: Build & Publish (Dockerfile.prod to GHCR)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and smoke test every leg, push nothing'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Lowercase, unlike the org login -- ghcr.io rejects uppercase image names.
+  IMAGE: ghcr.io/usace-cloud-compute/hms-runner
+  DOCKERFILE: Dockerfile.prod
+  # cc-java-sdk-1.1.2-all.jar is a 92 MB binary and is not committed here, so it
+  # is fetched from the cc-java-sdk release and verified against this digest.
+  # Empty still builds, but the image is then unverified -- paste the real value
+  # before trusting anything published:
+  #   sha256sum cc-java-sdk-1.1.2-all.jar   # same jar as ressim-runner gates
+  CC_SDK_VERSION: '1.1.2'
+  CC_SDK_SHA256: ''
+
+jobs:
+  build:
+    name: hms ${{ matrix.hms }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      # A broken 4.14 must not hide a good 4.13.
+      fail-fast: false
+      matrix:
+        include:
+          # Quote the versions: unquoted YAML reads 4.13 as a number, and 4.10
+          # would silently become "4.1" in the tag and in the tarball URL.
+          - hms: "4.13"
+            default: true
+          - hms: "4.14"
+            default: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the image tags
+        id: tags
+        env:
+          HMS: ${{ matrix.hms }}
+          IS_DEFAULT: ${{ matrix.default }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # On a release event this is the tag (v1.2.3 -> 1.2.3); on a dispatch it
+          # is the branch name, which is fine because a dry run pushes nothing.
+          version="${GITHUB_REF_NAME#v}"
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            local_tag="hms-runner:local-${HMS}"
+            {
+              echo "version=${version}"
+              echo "primary=${local_tag}"
+              echo "tags<<TAGS"
+              echo "${local_tag}"
+              echo "TAGS"
+            } >> "$GITHUB_OUTPUT"
+            echo "dry run: ${local_tag} only, nothing pushed"
+          else
+            {
+              echo "version=${version}"
+              echo "primary=${IMAGE}:${version}-hms${HMS}"
+              echo "tags<<TAGS"
+              echo "${IMAGE}:${version}-hms${HMS}"
+              echo "${IMAGE}:hms${HMS}"
+              if [ "${IS_DEFAULT}" = "true" ]; then
+                echo "${IMAGE}:latest"
+              fi
+              echo "TAGS"
+            } >> "$GITHUB_OUTPUT"
+            echo "tags for ${version} / HEC-HMS ${HMS}:"
+            printf '  %s\n' "${IMAGE}:${version}-hms${HMS}" "${IMAGE}:hms${HMS}"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: inputs.dry_run != true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ env.DOCKERFILE }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          platforms: linux/amd64
+          pull: true
+          load: ${{ inputs.dry_run == true }}
+          push: ${{ inputs.dry_run != true }}
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            HMS_VERSION=${{ matrix.hms }}
+            RUNNER_VERSION=${{ steps.tags.outputs.version }}
+            CC_SDK_VERSION=${{ env.CC_SDK_VERSION }}
+            CC_SDK_SHA256=${{ env.CC_SDK_SHA256 }}
+          labels: |
+            org.opencontainers.image.title=HEC-HMS Runner
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # Scope the cache per HEC-HMS version: the ~1 GB tarball layer is what
+          # makes a leg slow, and an unscoped cache lets matrix legs evict each
+          # other out of it.
+          cache-from: type=gha,scope=hms-${{ matrix.hms }}
+          cache-to: type=gha,mode=max,scope=hms-${{ matrix.hms }}
+          # A plain image manifest: buildx's default attestation makes the pushed
+          # digest an attestation index, which older container stacks refuse.
+          provenance: false
+          sbom: false
+
+      - name: Smoke test
+        env:
+          IMAGE_REF: ${{ steps.tags.outputs.primary }}
+          HMS: ${{ matrix.hms }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            ref="${IMAGE_REF}"
+          else
+            # `push: true` leaves nothing in the local daemon, so pull the tag
+            # back: this checks what the registry is serving, not the build cache.
+            docker pull --quiet "${IMAGE_REF}" > /dev/null
+            ref="${IMAGE_REF}"
+          fi
+
+          # 1. The image must carry its own HMS install, a runnable jar at the
+          #    path the ENTRYPOINT names, and the native library path the JVM
+          #    picks up from JAVA_TOOL_OPTIONS.
+          docker run --rm --entrypoint sh "$ref" -c '
+            set -eu
+            JRE=/usr/lib/jvm/java-17-openjdk-amd64/bin/java
+            test -x "$JRE" || { echo "FAIL: $JRE missing (apt JRE gone?)"; exit 1; }
+            test -f /hms/hms-runner.jar || { echo "FAIL: /hms/hms-runner.jar absent"; ls -l /hms; exit 1; }
+            test -f "${HMS_HOME}/hms.jar" || { echo "FAIL: ${HMS_HOME}/hms.jar absent"; exit 1; }
+            test -d "${HMS_HOME}/bin/gdal" || { echo "FAIL: ${HMS_HOME}/bin/gdal missing"; exit 1; }
+            "$JRE" -XshowSettings:properties -version 2>&1 \
+              | grep -q "${HMS_HOME}/bin/gdal" \
+              || { echo "FAIL: java.library.path did not reach the JVM"; exit 1; }
+            echo "layout OK: ${HMS_HOME}"'
+
+          # 2. Start the runner. With no payload it must fail for a *runtime*
+          #    reason; a link or class-load failure here means this HEC-HMS
+          #    version does not agree with what the plugin was compiled against.
+          set +e
+          out="$(docker run --rm "${ref}" 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "${out}" | tail -n 15
+          # Evidence the JVM applied the library path, printed by the JVM itself.
+          printf '%s' "${out}" | grep -q 'Picked up JAVA_TOOL_OPTIONS' \
+            || { echo "FAIL: JAVA_TOOL_OPTIONS was not applied"; exit 1; }
+          if printf '%s' "${out}" | grep -Eq 'UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException'; then
+            echo "FAIL: HEC-HMS ${HMS} did not load: ${out}" | tail -n 30
+            exit 1
+          fi
+          echo "smoke test OK for HEC-HMS ${HMS} (exit ${rc}, no linking errors)"

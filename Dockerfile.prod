@@ -1,53 +1,195 @@
-FROM eclipse-temurin:17-jdk AS builder
+# syntax=docker/dockerfile:1
+#
+# Production image for the HEC-HMS cloud-compute plugin, parameterised by
+# HEC-HMS version so CI can build one image per supported version:
+#
+#   docker build -f Dockerfile.prod --build-arg HMS_VERSION=4.13 \
+#       --build-arg CC_SDK_SHA256="$CC_SDK_SHA256" -t hms-runner:local-4.13 .
+#
+# The list of supported versions lives in .github/workflows/build-push-ghcr.yml.
+#
+# Deliberate changes from the original Dockerfile.prod. Each one was a blocker
+# for building more than one HEC-HMS version; details in docs/ci-cd.md:
+#
+#   1. The runner is compiled from the build CONTEXT, not from a
+#      `git clone ... main` inside the image. CI must build the commit that
+#      triggered it, and builds must not need github.com at build time.
+#   2. HEC-HMS is always installed at ${HMS_HOME}=/opt/hms, so ENTRYPOINT,
+#      CLASSPATH, PATH, GDAL_DATA and PROJ_LIB are version-independent. The
+#      version lives in the image tag, not in the in-image path. A
+#      /HEC-HMS-<version> -> /opt/hms symlink is kept so existing absolute
+#      references keep resolving.
+#   3. cc-java-sdk-1.1.2-all.jar is downloaded from the cc-java-sdk GitHub
+#      release and checked against a pinned sha256, instead of `COPY deps/...`
+#      (deps/ is not in this repository, so the old file cannot build from a
+#      clean checkout).
+#   4. The runner jar is copied to one fixed path (/hms/hms-runner.jar) so the
+#      ENTRYPOINT can be a literal. Docker does NOT expand ${VAR} inside an
+#      exec-form ENTRYPOINT array, and the jar gradle produces is named
+#      hms-runner-<version>.jar - that combination previously forced a shell
+#      launcher. Renaming the jar at COPY time removes it.
+#
+#      Note the ENTRYPOINT names the apt JRE by absolute path, not `java`: this
+#      image's PATH puts ${HMS_HOME}/jre/bin first (inherited from the original
+#      image), so a bare `java` would silently run HEC-HMS's bundled JRE instead
+#      of the Java 17 runtime the jar is compiled for.
+#
+# Air-gapped / internal-mirror builds: put HEC-HMS at /opt/hms and the SDK jar at
+# /workspaces/deps/cc-java-sdk-all.jar in BUILDER_BASE_IMAGE, then pass
+#   --build-arg SKIP_HMS_DOWNLOAD=true --build-arg SKIP_CC_SDK_DOWNLOAD=true
+# (or point HMS_TARBALL_URL / CC_SDK_URL at the internal mirror).
 
-ENV TZ=America/New_York
-ENV GRADLE_HOME=/opt/gradle/latest
-ENV PATH=${GRADLE_HOME}/bin:$PATH
-ARG HMS_VERSION=4.13-beta.6
+# ---- global args (the only ones visible to FROM) ---------------------------
+ARG HMS_VERSION=4.13
 ARG HMS_PLATFORM=linux64
-ARG HMS_HOME=HEC-HMS-4.13-beta.6
+ARG BUILDER_BASE_IMAGE=eclipse-temurin:17-jdk
+# ubuntu:20.04 left standard support in May 2025; its apt pools move to
+# old-releases and break unattended builds. Override with ubuntu:20.04 if a
+# legacy glibc is ever needed.
+ARG RUNTIME_BASE_IMAGE=ubuntu:22.04
 
-#need to get the jdk.
-RUN apt update &&\
-    apt -y install wget &&\
-    apt -y install libxrender1 libxtst6 libxi6 libfreetype6 libgfortran5 libfontconfig1 libgfortran5 &&\
-    wget https://www.hec.usace.army.mil/nexus/repository/maven-public/mil/army/usace/hec/hec-hms/${HMS_VERSION}-${HMS_PLATFORM}/hec-hms-${HMS_VERSION}-${HMS_PLATFORM}.tar.gz -P / &&\
-    mkdir /${HMS_HOME} &&\
-    tar -xvzf /hec-hms-${HMS_VERSION}-${HMS_PLATFORM}.tar.gz -C /${HMS_HOME} --strip-components=1 &&\
-    apt -y install git &&\
-    apt -y install unzip &&\
-    wget https://services.gradle.org/distributions/gradle-7.3.1-bin.zip -P /tmp &&\
-    unzip -d /opt/gradle /tmp/gradle-7.3.1-bin.zip &&\
-    ln -s /opt/gradle/gradle-7.3.1 /opt/gradle/latest &&\
-    mkdir -p /app
+# ===========================================================================
+# builder: HEC-HMS + Gradle + the plugin fat jar
+# ===========================================================================
+FROM ${BUILDER_BASE_IMAGE} AS builder
 
-WORKDIR /app
-#clone repo
-RUN git clone https://github.com/USACE-Cloud-Compute/hms-runner.git
-WORKDIR /app/hms-runner
-#build gradle
-COPY deps/cc-java-sdk-1.1.2-all.jar /workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar
-RUN gradle build --no-daemon -x test
+ARG HMS_VERSION
+ARG HMS_PLATFORM
+# Every image installs HMS here; the version is carried by the image tag.
+ARG HMS_HOME=/opt/hms
+ARG HMS_NEXUS_BASE=https://www.hec.usace.army.mil/nexus/repository/maven-public
+# Set to pull the tarball from an internal mirror instead of HEC Nexus.
+ARG HMS_TARBALL_URL=
+ARG SKIP_HMS_DOWNLOAD=false
 
-FROM ubuntu:20.04 AS prod
+ARG CC_SDK_URL=https://github.com/USACE-Cloud-Compute/cc-java-sdk/releases/download
+ARG CC_SDK_VERSION=1.1.2
+# Empty = no verification. CI always sets it; see the workflow's CC_SDK_SHA256.
+ARG CC_SDK_SHA256=
+ARG SKIP_CC_SDK_DOWNLOAD=false
 
-ARG HMS_HOME=HEC-HMS-4.13-beta.6
+ARG GRADLE_VERSION=7.3.1
+# Stamped into the jar name by build.gradle; the prod stage copies that jar to
+# one fixed path so the ENTRYPOINT can be a literal.
+ARG RUNNER_VERSION=0.0.1
 
-RUN apt update
-RUN mkdir -p /hms
-RUN apt -y install libxrender1 libxtst6 libxi6 libfreetype6 libgfortran5 libfontconfig1 openjdk-17-jre ca-certificates
-RUN mkdir -p  /${HMS_HOME}
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=America/New_York \
+    GRADLE_HOME=/opt/gradle/latest \
+    PATH=/opt/gradle/latest/bin:/usr/local/bin:/usr/bin:/bin \
+    HMS_HOME=${HMS_HOME} \
+    HMS_VERSION=${HMS_VERSION} \
+    CC_SDK_JAR=/workspaces/deps/cc-java-sdk-all.jar
 
-COPY --from=builder /app/hms-runner/build/libs /hms
-COPY --from=builder /${HMS_HOME} /${HMS_HOME}
-COPY --from=builder /workspaces/hms-runner/deps/cc-java-sdk-1.1.2-all.jar /${HMS_HOME}/lib
-ENV HMS_HOME=${HMS_HOME}
-ENV PROG=hms.hms
-ENV PATH=/${HMS_HOME}/bin/taudem:${HMS_HOME}/bin/mpi:${HMS_HOME}/bin:${HMS_HOME}/jre/bin/:${HMS_HOME}/jre/lib/:$PATH
-ENV GDAL_DATA=/${HMS_HOME}/bin/gdal/gdal-data
-ENV PROJ_LIB=/${HMS_HOME}/bin/gdal/proj
-ENV CLASSPATH=/${HMS_HOME}/*:${HMS_HOME}/lib/*:${HMS_HOME}/lib/hec/*:${HMS_HOME}/jre/lib/*
-ENV JAVA_OPTS="-Djava.library.path=/${HMS_HOME}/bin/gdal:${HMS_HOME}/bin"
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget curl ca-certificates git unzip \
+        libxrender1 libxtst6 libxi6 libfreetype6 libgfortran5 libfontconfig1
 
-WORKDIR hms
-ENTRYPOINT ["/usr/lib/jvm/java-17-openjdk-amd64/bin/java", "-Djava.library.path=/HEC-HMS-4.13-beta.6/bin/gdal:/HEC-HMS-4.13-beta.6/bin:/HEC-HMS-4.13-beta.6/bin/taudem:/HEC-HMS-4.13-beta.6/bin/mpi:/HEC-HMS-4.13-beta.6/jre/bin:/HEC-HMS-4.13-beta.6/jre/lib/", "-jar", "hms-runner-0.0.1.jar"]
+# ---- HEC-HMS distribution we compile against -------------------------------
+RUN set -eux; \
+    if [ "${SKIP_HMS_DOWNLOAD}" = "true" ]; then \
+        test -f "${HMS_HOME}/hms.jar"; \
+        echo "using pre-baked HEC-HMS at ${HMS_HOME}"; \
+        exit 0; \
+    fi; \
+    url="${HMS_TARBALL_URL}"; \
+    if [ -z "${url}" ]; then \
+        url="${HMS_NEXUS_BASE}/mil/army/usace/hec/hec-hms/${HMS_VERSION}-${HMS_PLATFORM}/hec-hms-${HMS_VERSION}-${HMS_PLATFORM}.tar.gz"; \
+    fi; \
+    echo "downloading ${url}"; \
+    wget -q -O /tmp/hms.tar.gz "${url}"; \
+    rm -rf "${HMS_HOME}"; mkdir -p "${HMS_HOME}"; \
+    tar -xzf /tmp/hms.tar.gz -C "${HMS_HOME}" --strip-components=1; \
+    rm -f /tmp/hms.tar.gz; \
+    test -f "${HMS_HOME}/hms.jar"
+
+# ---- cc-java-sdk (fat jar; not committed to git) ---------------------------
+RUN set -eux; \
+    mkdir -p /workspaces/deps; \
+    if [ "${SKIP_CC_SDK_DOWNLOAD}" = "true" ]; then \
+        test -f "${CC_SDK_JAR}"; \
+        echo "using pre-placed ${CC_SDK_JAR}"; \
+        exit 0; \
+    fi; \
+    wget -q -O /tmp/cc-java-sdk.jar \
+        "${CC_SDK_URL}/v${CC_SDK_VERSION}/cc-java-sdk-${CC_SDK_VERSION}-all.jar"; \
+    if [ -n "${CC_SDK_SHA256}" ]; then \
+        echo "${CC_SDK_SHA256}  /tmp/cc-java-sdk.jar" | sha256sum -c -; \
+    else \
+        echo "WARNING: CC_SDK_SHA256 is empty - cc-java-sdk was NOT verified"; \
+    fi; \
+    mv /tmp/cc-java-sdk.jar "${CC_SDK_JAR}"; \
+    ls -l "${CC_SDK_JAR}"
+
+# ---- the plugin itself, from the build context -----------------------------
+WORKDIR /workspaces/hms-runner
+COPY . .
+
+# gradle 7.3.1 is the version the images have always used. This repo ships
+# gradle/wrapper/gradle-wrapper.properties but NOT gradle-wrapper.jar, so
+# ./gradlew cannot be used until that jar is committed (or regenerated with
+# `gradle wrapper`).
+RUN --mount=type=cache,target=/root/.gradle \
+    set -eux; \
+    wget -q -O /tmp/gradle.zip \
+        "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"; \
+    mkdir -p /opt/gradle; \
+    unzip -q -d /opt/gradle /tmp/gradle.zip; \
+    ln -sfn "/opt/gradle/gradle-${GRADLE_VERSION}" /opt/gradle/latest; \
+    gradle --no-daemon --console=plain \
+        -PhmsHome="${HMS_HOME}" \
+        -PccSdkJar="${CC_SDK_JAR}" \
+        -PrunnerVersion="${RUNNER_VERSION}" \
+        build -x test; \
+    ls -l build/libs
+
+# ===========================================================================
+# prod: JRE + HEC-HMS runtime + plugin jar
+# ===========================================================================
+FROM ${RUNTIME_BASE_IMAGE} AS prod
+
+ARG HMS_VERSION
+ARG HMS_HOME=/opt/hms
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=America/New_York
+
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libxrender1 libxtst6 libxi6 libfreetype6 libgfortran5 libfontconfig1 \
+        openjdk-17-jre ca-certificates
+
+ENV HMS_HOME=${HMS_HOME} \
+    PROG=hms.hms \
+    PATH=${HMS_HOME}/bin/taudem:${HMS_HOME}/bin/mpi:${HMS_HOME}/bin:${HMS_HOME}/jre/bin/:${HMS_HOME}/jre/lib/:/usr/local/bin:/usr/bin:/bin \
+    GDAL_DATA=${HMS_HOME}/bin/gdal/gdal-data \
+    PROJ_LIB=${HMS_HOME}/bin/gdal/proj \
+    CLASSPATH=${HMS_HOME}/*:${HMS_HOME}/lib/*:${HMS_HOME}/lib/hec/*:${HMS_HOME}/jre/lib/* \
+    JAVA_TOOL_OPTIONS=-Djava.library.path=${HMS_HOME}/bin/gdal:${HMS_HOME}/bin:${HMS_HOME}/bin/taudem:${HMS_HOME}/bin/mpi:${HMS_HOME}/jre/bin:${HMS_HOME}/jre/lib/
+
+# ${HMS_HOME} is the same string in every image, so the native library path has
+# no version in it either. It travels as JAVA_TOOL_OPTIONS because the JVM reads
+# that at startup, which lets the ENTRYPOINT stay a literal array. To override
+# it, set JAVA_TOOL_OPTIONS on the container (it replaces the whole value).
+COPY --from=builder ${HMS_HOME}/ ${HMS_HOME}/
+COPY --from=builder /workspaces/deps/cc-java-sdk-all.jar ${HMS_HOME}/lib/
+# One jar in, fixed name out. If gradle ever leaves two hms-runner-*.jar files
+# here, COPY fails the build instead of silently picking one.
+COPY --from=builder /workspaces/hms-runner/build/libs/hms-runner-*.jar /hms/hms-runner.jar
+
+RUN set -eux; \
+    ln -sfn "${HMS_HOME}" "/HEC-HMS-${HMS_VERSION}"; \
+    test -f "${HMS_HOME}/hms.jar"; \
+    test -f /hms/hms-runner.jar; \
+    test -x /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+
+# Parity with the old image (its `WORKDIR hms` resolved to /hms). The runner
+# should probably get a writable scratch dir instead - tracked as a follow-up.
+WORKDIR /hms
+
+ENTRYPOINT ["/usr/lib/jvm/java-17-openjdk-amd64/bin/java", "-jar", "/hms/hms-runner.jar"]

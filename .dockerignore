@@ -1,0 +1,22 @@
+# The build context is COPYed into the builder stage and compiled there, so
+# anything stale or large here either slows the build or leaks into the jar.
+.git
+.gitignore
+.github
+.vscode
+.devcontainer
+.idea
+*.iml
+
+# Gradle output from a host or devcontainer build: without this the image can
+# silently ship a jar compiled against a different HEC-HMS version.
+.gradle
+build
+**/build
+**/obj
+
+# Large / uncommitted test inputs (see README: ExcessPrecip.p01.hdf,
+# ElkMiddle.p01.hdf are dropped in by hand and are not needed to compile).
+**/*.hdf
+**/*.tar.gz
+**/*.zip
